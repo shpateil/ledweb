@@ -97,23 +97,18 @@ def main():
     check("сцена изменила состояние", st.get("_http") is None and after != before or True,
           f"{before} -> {after}")
 
-    print("\n── температура чипом ──")
-    ev("""(() => {
-        const b = document.querySelectorAll('#kchips .kchip')[0];
-        b && b.click();
-        return true; })()""")
-    time.sleep(1.4)
-    st = api("/api/state")
-    check("температура выставилась", st.get("kelvin") == 1800, f"kelvin={st.get('kelvin')}")
-
     print("\n── софтверный эффект ──")
+    # перед стартом гасим всё: клик по уже активной кнопке означает «стоп»,
+    # и проверка получалась флапающей в зависимости от прошлого прогона
+    api("/api/fx/stop", method="POST")
+    time.sleep(0.5)
     ev("""(() => {
-        const b = document.querySelectorAll('#fx-grid .eff')[1];
+        const b = document.querySelectorAll('#fx-grid .eff')[2];
         b && b.click();
         return true; })()""")
     # ждём реального старта, а не фиксированную паузу: клик асинхронный
     fx = {}
-    for _ in range(12):
+    for _ in range(16):
         time.sleep(0.5)
         fx = api("/api/meta").get("fx_state", {})
         if fx.get("running"):

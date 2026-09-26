@@ -86,11 +86,9 @@ def main():
     check("нет miclevel", ev("!document.querySelector('#miclevel')"))
     check("нет mic в тексте", "реакция на звук" not in (ev("document.body.innerText") or ""))
 
-    print("\n── температура ──")
-    chips = ev("document.querySelectorAll('#kchips .kchip').length")
-    check("чипы пресетов отрисованы", chips == 7, f"{chips} шт")
-    names = ev("""[...document.querySelectorAll('#kchips .kchip')].map(b => b.textContent).join('|')""")
-    check("названия на русском", "свеча" in (names or ""), (names or "")[:70])
+    print("\n── звук и температура вырезаны ──")
+    check("нет блока температуры", not ev("document.querySelector('#kelvin')"))
+    check("нет kval", not ev("document.querySelector('#kval')"))
 
     print("\n── контент ──")
     check("сцены", ev("document.querySelectorAll('#scenes .scene').length") >= 12)
