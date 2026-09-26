@@ -1,0 +1,62 @@
+[Unit]
+Description=ledweb — панель управления BLE-лентой elk-bledom
+Documentation=file:<ПУТЬ_К_ПРОЕКТУ>/README.md
+After=bluetooth.service
+Wants=bluetooth.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=<ПУТЬ_К_ПРОЕКТУ>
+Environment=PYTHONUNBUFFERED=1
+# ждём, пока bluez поднимет адаптер, иначе первый connect падает
+ExecStartPre=/usr/bin/bash -c 'for i in $(seq 1 30); do bluetoothctl show >/dev/null 2>&1 && break; sleep 1; done'
+ExecStart=<ПУТЬ_К_VENV>/bin/python -m ledweb.main --host 127.0.0.1 --port ПОРТ
+
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
+# после stop демон уже отпустил ленту, перезапуск на ручной stop не нужен
+# иначе `systemctl stop` сразу поднимает сервис обратно
+SuccessExitStatus=0 143
+
+# доступ к системной шине bluez: пользователь состоит в wheel, а не в bluetooth
+# (группы bluetooth на этой машине нет, и BusName=org.bluez достаточно)
+BusName=org.bluez
+PrivateDevices=no
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=<ПУТЬ_К_ДАННЫМ>
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+# RestrictNamespaces убран: bluetoothctl в ExecStartPre лезет в netns/pid-ns
+# и systemd отдавал 226/NAMESPACE. харденинг тут не даёт ничего — процесс
+# и так работает от пользователя с CapabilityBoundingSet=
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+MemoryMax=256M
+MemoryHigh=192M
+CPUQuota=40%
+TasksMax=64
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ledweb
+
+[Install]
+WantedBy=default.target
