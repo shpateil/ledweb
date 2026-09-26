@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ledweb — elk-bledom</title>
+<meta name="theme-color" content="#0a0a0c">
+<link rel="preload" href="/static/fonts/Geist-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/Geist-Medium.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/icons/lucide.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="dot" id="dot"></span>
+    <b>ledweb</b>
+    <span class="muted" id="devname">лента</span>
+  </div>
+  <div class="top-right">
+    <span class="chip" id="latency" title="задержка последней команды"></span>
+    <button class="icon-btn" id="btn-settings" title="настройки"><i data-lucide="settings-2"></i></button>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ── главный блок: цвет + состояние ─────────────────────────── -->
+  <section class="hero card">
+    <div class="hero-main">
+      <div class="swatch-big" id="swatch" tabindex="0" role="button"
+           aria-label="выбрать цвет">
+        <div class="swatch-fill" id="swatch-fill"></div>
+        <div class="swatch-meta">
+          <span class="hex mono" id="hex">#ffffff</span>
+          <span class="rgb mono" id="rgb">255 255 255</span>
+        </div>
+      </div>
+
+      <div class="hero-side">
+        <button class="power" id="power" aria-pressed="false">
+          <i data-lucide="power"></i>
+          <span id="power-label">включить</span>
+        </button>
+
+        <div class="ctl">
+          <label>яркость <b class="num" id="bval">100</b></label>
+          <input type="range" id="bright" min="0" max="100" value="100" aria-label="яркость">
+        </div>
+
+        <div class="ctl">
+          <label>цвет температуры <b class="num" id="kval">—</b></label>
+          <input type="range" id="kelvin" min="1800" max="7000" step="100" value="4000" aria-label="температура">
+        </div>
+      </div>
+    </div>
+
+    <div class="picker" id="picker">
+      <canvas id="sv" height="220" aria-label="насыщенность и светлота"></canvas>
+      <div class="hue" id="hue" tabindex="0" role="slider" aria-label="оттенок">
+        <div class="hue-cursor" id="hue-cursor"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── сцены ──────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>сцены</h2>
+    </div>
+    <div class="scenes" id="scenes"></div>
+  </section>
+
+  <!-- ── палитры ────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>палитры</h2>
+      <div class="tabs" role="tablist">
+        <button class="tab on" data-pal="material" role="tab">материалы</button>
+        <button class="tab" data-pal="mood" role="tab">настроение</button>
+        <button class="tab" data-pal="saved" role="tab">мои</button>
+      </div>
+    </div>
+    <div class="palette" id="palette"></div>
+  </section>
+
+  <!-- ── эффекты ────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>эффекты</h2>
+      <span class="muted" id="effect-now">статичный цвет</span>
+    </div>
+    <div class="effects" id="effects"></div>
+    <div class="ctl wide">
+      <label>скорость эффекта <b class="num" id="sval">50</b></label>
+      <input type="range" id="speed" min="0" max="100" value="50" aria-label="скорость">
+    </div>
+  </section>
+
+  <!-- ── софт-эффекты ────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>свои эффекты</h2>
+      <span class="muted" id="fx-now">выключены</span>
+    </div>
+    <div class="fx-grid" id="fx-grid"></div>
+    <div class="ctl wide">
+      <label>скорость <b class="num" id="fx-speed-val">1.0</b>x</label>
+      <input type="range" id="fx-speed" min="10" max="300" value="100" aria-label="скорость эффекта">
+    </div>
+    <p class="muted tiny">эти эффекты считает демон и шлёт ленте пакетами. встроенные
+    в прошивку работают на всех ревизиях, эти — всегда одинаково</p>
+  </section>
+
+  <!-- ── микрофон ───────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>реакция на звук</h2>
+      <button class="toggle" id="mic" role="switch" aria-checked="false">
+        <span class="knob"></span>
+      </button>
+    </div>
+    <div class="ctl wide" id="mic-wrap">
+      <label>чувствительность <b class="num" id="mval">50</b></label>
+      <input type="range" id="miclevel" min="0" max="100" value="50" aria-label="чувствительность микрофона">
+    </div>
+  </section>
+
+  <!-- ── расписание ─────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>расписание</h2>
+    </div>
+    <div class="sched">
+      <div class="sched-row">
+        <select id="s-on" aria-label="действие">
+          <option value="color">цвет</option>
+          <option value="brightness">яркость</option>
+          <option value="power">вкл/выкл</option>
+          <option value="scene">сцена</option>
+          <option value="effect">эффект</option>
+        </select>
+        <input type="time" id="s-time" value="07:00" aria-label="время">
+        <input type="color" id="s-color" value="#ff4081" aria-label="цвет">
+        <input type="number" id="s-val" value="100" min="0" max="100" aria-label="значение" class="hidden">
+        <select id="s-scene" class="hidden" aria-label="сцена"></select>
+        <select id="s-effect" class="hidden" aria-label="эффект"></select>
+        <button class="btn primary" id="s-add"><i data-lucide="plus"></i>добавить</button>
+      </div>
+      <div class="days" id="s-days"></div>
+    </div>
+    <div class="rules" id="rules"></div>
+  </section>
+
+  <!-- ── таймеры ────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>таймер выключения</h2>
+    </div>
+    <div class="timers">
+      <div class="timer-row">
+        <input type="number" id="t-min" value="30" min="1" max="999" aria-label="минуты">
+        <span class="muted">мин до выключения</span>
+        <button class="btn primary" id="t-on">запустить</button>
+        <button class="btn" id="t-off" hidden>отменить</button>
+      </div>
+      <div class="muted" id="t-left"></div>
+      <p class="muted tiny">таймер живёт в демоне, работает даже если вкладка закрыта</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── шторка настроек ──────────────────────────────────────────── -->
+<aside class="sheet" id="sheet" hidden>
+  <div class="sheet-head">
+    <h2>настройки</h2>
+    <button class="icon-btn" id="sheet-close"><i data-lucide="x"></i></button>
+  </div>
+  <div class="sheet-body">
+    <div class="ctl">
+      <label>цвет интерфейса</label>
+      <div class="acc-row" id="accent-picks"></div>
+    </div>
+    <div class="ctl">
+      <label>устройство <b class="mono" id="s-mac"></b></label>
+      <button class="btn" id="btn-scan"><i data-lucide="radar"></i>найти ленты</button>
+      <div class="scan-list" id="scan-list"></div>
+    </div>
+    <div class="ctl">
+      <label>вариант протокола</label>
+      <select id="s-variant"></select>
+      <p class="muted tiny">если команда не применяется, попробуй другой вариант</p>
+    </div>
+    <div class="ctl">
+      <label>тестовая посылка</label>
+      <div class="row gap">
+        <button class="btn" data-test="on">on</button>
+        <button class="btn" data-test="off">off</button>
+        <button class="btn" data-test="resync"><i data-lucide="refresh-cw"></i>синхронизировать время</button>
+      </div>
+    </div>
+    <div class="ctl">
+      <label>горячие клавиши</label>
+      <table class="keys">
+        <tr><td><kbd>пробел</kbd></td><td>вкл/выкл</td></tr>
+        <tr><td><kbd>1</kbd>…<kbd>9</kbd></td><td>пресеты</td></tr>
+        <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>яркость ±5</td></tr>
+        <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>оттенок</td></tr>
+        <tr><td><kbd>shift</kbd>+<kbd>←→</kbd></td><td>насыщенность</td></tr>
+        <tr><td><kbd>e</kbd></td><td>эффекты</td></tr>
+        <tr><td><kbd>s</kbd></td><td>сцены</td></tr>
+        <tr><td><kbd>t</kbd></td><td>таймер</td></tr>
+        <tr><td><kbd>?</kbd></td><td>эта подсказка</td></tr>
+      </table>
+    </div>
+  </div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+
+<div class="toast" id="toast" hidden></div>
+</body>
+</html>
