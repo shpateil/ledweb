@@ -1,17 +1,17 @@
 [Unit]
 Description=ledweb — панель управления BLE-лентой elk-bledom
-Documentation=file:<ПУТЬ_К_ПРОЕКТУ>/README.md
+Documentation=file://%h/ledweb/README.md
 After=bluetooth.service
 Wants=bluetooth.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=exec
-WorkingDirectory=<ПУТЬ_К_ПРОЕКТУ>
+WorkingDirectory=%h/ledweb
 Environment=PYTHONUNBUFFERED=1
 # ждём, пока bluez поднимет адаптер, иначе первый connect падает
 ExecStartPre=/usr/bin/bash -c 'for i in $(seq 1 30); do bluetoothctl show >/dev/null 2>&1 && break; sleep 1; done'
-ExecStart=<ПУТЬ_К_VENV>/bin/python -m ledweb.main --host 127.0.0.1 --port ПОРТ
+ExecStart=%h/ledweb/.venv/bin/python -m ledweb.main --host 127.0.0.1 --port 8099
 
 Restart=on-failure
 RestartSec=3
@@ -29,7 +29,7 @@ PrivateDevices=no
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=<ПУТЬ_К_ДАННЫМ>
+ReadWritePaths=%h/.config/ledweb
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

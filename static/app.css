@@ -37,6 +37,10 @@ svg, [data-lucide] { width: 16px; height: 16px; flex: none; }
 .num  { font-variant-numeric: tabular-nums; }
 .muted { color: var(--tx-2); }
 .tiny { font-size: var(--fs-12); }
+/* атрибут hidden должен побеждать любые display в компонентах: .sheet и .btn
+   задают display:flex, который перебивал браузерное [hidden]{display:none},
+   и шторка настроек висела поверх панели с самого старта */
+[hidden] { display: none !important; }
 .hidden { display: none !important; }
 .gap { display: flex; gap: var(--sp-4); }
 :focus-visible { outline: var(--focus-w) solid var(--ac); outline-offset: var(--focus-offset); border-radius: var(--r-xs); }

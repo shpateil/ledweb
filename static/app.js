@@ -11,6 +11,17 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 const $ = (s, r = document) => r.querySelector(s);
+
+// обработчик, который не роняет весь скрипт на отсутствующем элементе.
+// раньше было `on('#mic', ...)` и удаление карточки из
+// разметки глушило init(): 0 сцен, 0 иконок, мёртвый цвет, настройки не
+// открывались. on() вместо молчаливого краша — с явной записью в консоль
+function on(sel, evt, fn) {
+  const el = typeof sel === 'string' ? $(sel) : sel;
+  if (!el) { console.warn('ledweb: нет элемента для', sel); return false; }
+  el.addEventListener(evt, fn);
+  return true;
+}
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 const ACCENTS = ['#3cec80', '#ff2e9a', '#ff5fd0', '#5c9dff', '#f5a524', '#f2f2f4'];
@@ -47,6 +58,13 @@ const hex2rgb = (hex) => {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
+// всё, что пришло с сервера (имена пресетов, названия сцен, адреса), идёт
+// в разметку через innerHTML. без экранирования имя вида <img onerror=...>
+// выполняется. экранируем каждый раз перед вставкой
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// безопасная заливка: цвет приходит с сервера и может не быть валидным css
+const safeColor = (hex) => (/^#[0-9a-f]{3,8}$/i.test(hex || '') ? hex : 'transparent');
 const rgb2hex = (r, g, b) => '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
 
 let toastT = null;
@@ -110,10 +128,6 @@ function ingest(snap) {
   $('#s-mac').textContent = snap.mac || '';
   $('#effect-now').textContent = snap.effect_name || '—';
   render();
-  if (snap.connected) {
-    $('#mic').setAttribute('aria-checked', String(!!snap.mic));
-    $('#mic-wrap').style.opacity = snap.mic ? '1' : '.5';
-  }
 }
 
 let lastSentHex = null;
@@ -136,10 +150,7 @@ function render() {
     $('#bval').textContent = S.state.brightness;
     if (document.activeElement !== $('#speed')) $('#speed').value = S.state.effect_speed;
     $('#sval').textContent = S.state.effect_speed;
-    if (document.activeElement !== $('#miclevel')) $('#miclevel').value = S.state.mic_level;
-    $('#mval').textContent = S.state.mic_level;
-    $('#kval').textContent = S.state.kelvin ? `${S.state.kelvin} K` : '—';
-    $$('.eff').forEach(el => el.classList.toggle('on', +el.dataset.v === S.state.effect));
+      $$('.eff').forEach(el => el.classList.toggle('on', +el.dataset.v === S.state.effect));
   }
 }
 
@@ -204,17 +215,21 @@ hueEl.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') { S.h = (S.h + step) % 360; apply('color', { h: S.h, s: S.s, v: S.v }); e.preventDefault(); }
 });
 
-/* колесо мыши над всей панелью — яркость */
+/* колесо мыши меняет яркость только там, где это ожидаемо: над hsv-колесом
+   и над плашкой состояния. раньше preventDefault висел на document, и
+   страница вообще не прокручивалась мышью */
 document.addEventListener('wheel', e => {
-  if (!$('#sheet').hidden || e.target.closest('select, input[type=number]')) return;
-  e.preventDefault();
+  if (!$('#sheet').hidden) return;
+  if (e.target.closest('input, select, .sheet, .scroller, .rule, .fx-grid, .palette, .tabs')) return;
+  if (!e.target.closest('#sv, .hero, .panel')) return;
   const cur = +(S.state?.brightness ?? 100);
   const next = Math.max(0, Math.min(100, cur - Math.sign(e.deltaY) * 5));
+  e.preventDefault();
   apply('brightness', { value: next });
 }, { passive: false });
 
 /* ── вкл/выкл ──────────────────────────────────────────────────── */
-$('#power').addEventListener('click', () => {
+on('#power', 'click', () => {
   const on = !S.state?.power;
   apply('power', { on });
 });
@@ -230,14 +245,6 @@ const live = (el, fn) => {
 };
 live($('#bright'), (v, commit) => { if (commit) apply('brightness', { value: v }, { quiet: true }); else { S.state && (S.state.brightness = v); render(); } });
 live($('#speed'),  (v, commit) => { if (commit) apply('speed', { value: v }, { quiet: true }); else { S.state && (S.state.effect_speed = v); render(); } });
-live($('#miclevel'), (v, commit) => { if (commit) apply('mic_level', { value: v }, { quiet: true }); else { S.state && (S.state.mic_level = v); render(); } });
-live($('#kelvin'), (v, commit) => { if (commit) apply('kelvin', { value: v }, { quiet: true }); else { $('#kval').textContent = `${v} K`; } });
-
-$('#mic').addEventListener('click', () => {
-  const on = $('#mic').getAttribute('aria-checked') !== 'true';
-  $('#mic').setAttribute('aria-checked', String(on));
-  apply('mic', { on });
-});
 
 /* ── сцены ─────────────────────────────────────────────────────── */
 function renderScenes() {
@@ -248,10 +255,10 @@ function renderScenes() {
     const b = document.createElement('button');
     b.className = 'scene';
     b.innerHTML = `<div class="row">
-        <span class="leddot" style="background:${hex}"></span>
-        <i data-lucide="${sc.icon}"></i></div>
-      <b>${sc.name}</b>
-      <span class="meta">${sc.brightness}%${sc.effect ? ' · эффект' : ''}</span>`;
+        <span class="leddot" style="background:${safeColor(hex)}"></span>
+        <i data-lucide="${esc(sc.icon)}"></i></div>
+      <b>${esc(sc.name)}</b>
+      <span class="meta">${esc(sc.brightness)}%${sc.effect ? ' · эффект' : ''}</span>`;
     b.addEventListener('click', async () => {
       try { ingest(await api('/api/scene', { method: 'POST', body: { id: sc.id } })); toast(`сцена: ${sc.name}`); }
       catch (e) { toast(e.message, true); }
@@ -262,15 +269,20 @@ function renderScenes() {
 }
 
 /* ── палитры ────────────────────────────────────────────────────── */
+let paletteToken = 0;   // защита от гонки: поздний await не должен дописывать
+                        // пресеты в уже перерисованную вкладку
 async function renderPalette() {
+  const mine = ++paletteToken;
   const box = $('#palette');
+  const tab = S.palette;
   box.innerHTML = '';
-  if (S.palette === 'saved') {
+  if (tab === 'saved') {
     const presets = await api('/api/presets').catch(() => []);
+    if (mine !== paletteToken) return;      // вкладку уже переключили
     presets.forEach(p => {
       const b = document.createElement('button');
       b.className = 'pal';
-      b.innerHTML = `<i style="background:${p.hex}"></i><span>${p.name}</span>`;
+      b.innerHTML = `<i style="background:${safeColor(p.hex)}"></i><span>${esc(p.name)}</span>`;
       b.addEventListener('click', () => setHex(p.hex));
       if (!p.builtin) {
         b.addEventListener('contextmenu', e => {
@@ -288,7 +300,7 @@ async function renderPalette() {
   pal.forEach(item => {
     const b = document.createElement('button');
     b.className = 'pal';
-    b.innerHTML = `<i style="background:${item.hex}"></i><span>${item.name}</span>`;
+    b.innerHTML = `<i style="background:${safeColor(item.hex)}"></i><span>${esc(item.name)}</span>`;
     b.addEventListener('click', () => setHex(item.hex));
     b.addEventListener('contextmenu', e => {   // долгий/правый клик — сохранить
       e.preventDefault();
@@ -317,7 +329,7 @@ function setHex(hex) {
 }
 
 /* сохранить текущий цвет в «мои» */
-$('#swatch').addEventListener('contextmenu', e => {
+on('#swatch', 'contextmenu', e => {
   e.preventDefault();
   // hsv2rgb отдаёт массив [r,g,b], hex2rgb — объект. не путать: в коде выше
   // стоит распаковка массива, здесь нужен объект по именам
@@ -336,7 +348,7 @@ function renderEffects() {
     const b = document.createElement('button');
     b.className = 'eff';
     b.dataset.v = e.value;
-    b.innerHTML = `${e.name}<span class="code">0x${e.value.toString(16)}</span>`;
+    b.innerHTML = `${esc(e.name)}<span class="code">0x${e.value.toString(16)}</span>`;
     b.addEventListener('click', () => apply('effect', { value: e.value }));
     box.appendChild(b);
   });
@@ -375,8 +387,8 @@ async function renderRules() {
       .map((bit, i) => bit === '1' ? dayNames[i] : null).filter(Boolean).join(' ');
     const el = document.createElement('div');
     el.className = 'rule';
-    el.innerHTML = `<time>${rule.time}</time>
-      <span class="what">${what}${days ? ' · ' + days : ''}</span>
+    el.innerHTML = `<time>${esc(rule.time)}</time>
+      <span class="what">${esc(what)}${days ? ' · ' + esc(days) : ''}</span>
       <button class="kill"><i data-lucide="trash-2"></i></button>`;
     $('.kill', el).addEventListener('click', () =>
       api('/api/rules?id=' + rule.id, { method: 'DELETE' }).then(renderRules));
@@ -385,7 +397,7 @@ async function renderRules() {
   refreshIcons();
 }
 
-$('#s-on').addEventListener('change', () => {
+on('#s-on', 'change', () => {
   const kind = $('#s-on').value;
   $('#s-color').classList.toggle('hidden', kind !== 'color');
   $('#s-val').classList.toggle('hidden', kind !== 'brightness');
@@ -393,7 +405,7 @@ $('#s-on').addEventListener('change', () => {
   $('#s-effect').classList.toggle('hidden', kind !== 'effect');
 });
 
-$('#s-add').addEventListener('click', async () => {
+on('#s-add', 'click', async () => {
   const kind = $('#s-on').value;
   const action = { kind };
   if (kind === 'color') { action.hex = $('#s-color').value; action.rgb = hex2rgb(action.hex); }
@@ -415,10 +427,11 @@ function renderFx() {
   if (!box) return;
   box.innerHTML = '';
   const cur = S.meta?.fx_state?.name || 'static';
+  const on = S.meta?.fx_state?.running === true;   // без ?. был TypeError
   (S.meta?.fx || []).forEach(f => {
     const b = document.createElement('button');
-    b.className = 'eff fx' + (cur === f.key && S.meta.fx_state.running ? ' on' : '');
-    b.innerHTML = `${f.name}<span class="code">${f.fps ? f.fps + ' к/с' : 'без цикла'}</span>`;
+    b.className = 'eff fx' + (cur === f.key && on ? ' on' : '');
+    b.innerHTML = `${esc(f.name)}<span class="code">${f.fps ? f.fps + ' к/с' : 'без цикла'}</span>`;
     b.addEventListener('click', () => {
       const speed = +$('#fx-speed').value / 100;
       if (f.key === 'static') {
@@ -444,10 +457,10 @@ async function refreshMeta() {
   renderFx();
 }
 
-$('#fx-speed').addEventListener('input', (e) => {
+on('#fx-speed', 'input', (e) => {
   $('#fx-speed-val').textContent = (e.target.value / 100).toFixed(1);
 });
-$('#fx-speed').addEventListener('change', async (e) => {
+on('#fx-speed', 'change', async (e) => {
   const s = S.meta?.fx_state;
   if (!s?.running) return;
   // скорость у движка задаётся при старте, поэтому перезапускаем эффект
@@ -458,7 +471,7 @@ $('#fx-speed').addEventListener('change', async (e) => {
 });
 
 /* ── таймер (живёт в демоне) ────────────────────────────────────── */
-$('#t-on').addEventListener('click', async () => {
+on('#t-on', 'click', async () => {
   const min = +$('#t-min').value;
   if (!(min > 0)) { toast('введи минуты', true); return; }
   try {
@@ -470,7 +483,7 @@ $('#t-on').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-$('#t-off').addEventListener('click', async () => {
+on('#t-off', 'click', async () => {
   try {
     await api('/api/timer', { method: 'DELETE' });
     S.timer = null;
@@ -499,13 +512,13 @@ function openSheet(open) {
   $('#sheet').hidden = !open;
   $('#scrim').hidden = !open;
 }
-$('#btn-settings').addEventListener('click', () => openSheet(true));
-$('#sheet-close').addEventListener('click', () => openSheet(false));
-$('#scrim').addEventListener('click', () => openSheet(false));
+on('#btn-settings', 'click', () => openSheet(true));
+on('#sheet-close', 'click', () => openSheet(false));
+on('#scrim', 'click', () => openSheet(false));
 
 $('#accent-picks').innerHTML = ACCENTS.map(c =>
   `<button class="acc-pick" data-c="${c}" style="background:${c}" title="${c}"></button>`).join('');
-$('#accent-picks').addEventListener('click', e => {
+on('#accent-picks', 'click', e => {
   const b = e.target.closest('.acc-pick');
   if (!b) return;
   const c = b.dataset.c;
@@ -514,7 +527,7 @@ $('#accent-picks').addEventListener('click', e => {
   $$('.acc-pick').forEach(x => x.classList.toggle('on', x === b));
 });
 
-$('#btn-scan').addEventListener('click', async () => {
+on('#btn-scan', 'click', async () => {
   const box = $('#scan-list');
   box.innerHTML = '<p class="muted tiny">ищу…</p>';
   try {
@@ -524,7 +537,7 @@ $('#btn-scan').addEventListener('click', async () => {
     devices.forEach(d => {
       const el = document.createElement('div');
       el.className = 'scan-item';
-      el.innerHTML = `<span class="mono">${d.address}</span><span class="muted">${d.name || ''}</span>`;
+      el.innerHTML = `<span class="mono">${esc(d.address)}</span><span class="muted">${esc(d.name || '')}</span>`;
       const b = document.createElement('button');
       b.className = 'btn';
       b.textContent = 'выбрать';
@@ -539,7 +552,7 @@ $('#btn-scan').addEventListener('click', async () => {
   } catch (e) { box.innerHTML = `<p class="muted tiny">${e.message}</p>`; }
 });
 
-$('#s-variant').addEventListener('change', e =>
+on('#s-variant', 'change', e =>
   api('/api/settings', { method: 'POST', body: { variant: e.target.value } })
     .then(() => toast('сохранено, перезапусти сервис')).catch(err => toast(err.message, true)));
 
@@ -608,13 +621,19 @@ function connectStream() {
         $('#t-off').hidden = false;
         tick();
       } else {
+        // условие проверялось ПОСЛЕ обнуления S.timer, поэтому было всегда
+        // истинным и «таймер сработал» всплывало при любом снятии таймера
+        const had = S.timer !== null;
         S.timer = null;
         $('#t-off').hidden = true;
-        $('#t-left').textContent = t.left === 0 && S.timer === null ? 'таймер сработал' : '';
+        $('#t-left').textContent = (had && t.left === 0) ? 'таймер сработал' : '';
       }
     } catch {}
   });
   es.onerror = () => { es.close(); setTimeout(connectStream, 2500); };
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) es.close(); else connectStream();
+  });
 }
 
 /* ── старт ─────────────────────────────────────────────────────── */
@@ -625,11 +644,11 @@ function connectStream() {
   try {
     S.meta = await api('/api/meta');
     $('#s-variant').innerHTML = S.meta.variants.map(v =>
-      `<option value="${v}"${v === 'generic' ? ' selected' : ''}>${v}</option>`).join('');
+      `<option value="${esc(v)}"${v === 'generic' ? ' selected' : ''}>${esc(v)}</option>`).join('');
     $('#s-scene').innerHTML = S.meta.scenes.map(s =>
-      `<option value="${s.id}">${s.name}</option>`).join('');
+      `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     $('#s-effect').innerHTML = S.meta.effects.map(e =>
-      `<option value="${e.value}">${e.name}</option>`).join('');
+      `<option value="${esc(e.value)}">${esc(e.name)}</option>`).join('');
     renderScenes();
     renderEffects();
     renderFx();

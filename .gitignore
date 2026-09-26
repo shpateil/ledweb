@@ -10,7 +10,8 @@ state/
 data/
 *.log
 shot-*.png
-qa_*.py
 pulse.py
+probe_power.py
+raw.btsnoop
 *.json
 !package.json

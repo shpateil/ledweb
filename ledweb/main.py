@@ -1,6 +1,6 @@
 """точка входа ledweb: демон + веб-панель управления лентой elk-bledom.
 
-    python -m ledweb.main --port ПОРТ
+    python -m ledweb.main --port 8099
 
 корректно гасится по SIGTERM/SIGINT: без этого systemd ждёт TimeoutStopSec
 и убивает процесс SIGKILL, а лента остаётся в последнем состоянии.
@@ -23,7 +23,7 @@ from .store import Store
 log = logging.getLogger("ledweb")
 
 
-def build(host: str = "127.0.0.1", port: int = ПОРТ) -> Server:
+def build(host: str = "127.0.0.1", port: int = 8123) -> Server:
     store = Store()
     dev = Device(
         mac=store.settings.get("mac", P.DEFAULT_MAC),
@@ -36,7 +36,7 @@ def build(host: str = "127.0.0.1", port: int = ПОРТ) -> Server:
 async def main() -> None:
     ap = argparse.ArgumentParser(description="ledweb — панель elk-bledom")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=ПОРТ)
+    ap.add_argument("--port", type=int, default=8123)
     ap.add_argument("--mac", default=None, help="mac ленты")
     ap.add_argument("--variant", default=None, choices=list(P.VARIANTS))
     ap.add_argument("-v", "--verbose", action="store_true")

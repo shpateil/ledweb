@@ -112,9 +112,14 @@ def _days_to_mask(days: Any) -> int:
         mask = 0
         for d in days:
             try:
-                mask |= 1 << int(d)
+                n = int(d)
             except (TypeError, ValueError):
                 continue
+            # без проверки диапазона days=[10**10] давал 1 << 10**10 — это
+            # 1.2 гигабайта на один запрос, и демон умирал по MemoryMax
+            if not 0 <= n <= 7:
+                continue
+            mask |= 1 << n
         return mask
     return 0x7F
 
@@ -219,8 +224,7 @@ class Server:
                                         if _ == n]}
                              for n, r, g, b in P.PALETTE_MOOD],
                 },
-                "kelvin": [{"name": n, "k": k} for n, k, _w, _c in P.KELVIN_PRESETS],
-                "scenes": [dict(s, color=f"#{s['color'][0]:02x}{s['color'][1]:02x}{s['color'][2]:02x}")
+                    "scenes": [dict(s, color=f"#{s['color'][0]:02x}{s['color'][1]:02x}{s['color'][2]:02x}")
                            for s in SCENES],
                 "variants": list(P.VARIANTS.keys()),
                 "fx": [{"key": k, "name": FX.EFFECTS[k]["name"], "fps": FX.EFFECTS[k]["fps"]}

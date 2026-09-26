@@ -30,6 +30,9 @@ log = logging.getLogger("ledweb.driver")
 MIN_GAP = 0.025         # минимальный зазор между командами, сек
 CONNECT_TIMEOUT = 10.0
 WRITE_TIMEOUT = 8.0     # сколько ждём выполнения команды в очереди
+GATT_WRITE_TIMEOUT = 2.0  # сколько ждём саму запись в ленту. dbus-вызов без
+                          # ответа может висеть вечно на зависшем bluez, и если
+                          # не ограничить — writer встанет колом навсегда
 READY_TIMEOUT = 14.0    # сколько ждём, пока фоновый поток поднимет соединение
 RECONNECT_BACKOFF = (0.4, 0.8, 1.6, 3.0, 5.0, 8.0)
 IDLE_POLL = 0.5         # как часто проверять, что соединение ещё живо
@@ -80,6 +83,7 @@ class Driver:
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
+        self._pending: dict[asyncio.Future, int] = {}   # future → сколько кадров осталось
         self._notify: list[bytes] = []
         self._ready = asyncio.Event()      # соединение живое, вода по очереди идёт
 
@@ -175,25 +179,38 @@ class Driver:
                 # клиент без is_connected — висящий. отдаём в _teardown,
                 # иначе следующий _open() решит что соединение уже есть
                 return
+            # в очереди лежит кортеж (future, payload) на каждый кадр.
+            # маркера нет: у команды один future на несколько payload, и
+            # резолвится он только когда все её кадры записаны
             try:
                 first = await asyncio.wait_for(self._queue.get(), timeout=IDLE_POLL)
             except asyncio.TimeoutError:
                 continue
-            batch: list[Any] = list(first)
+            items: list[tuple[asyncio.Future | None, bytes]] = [first]
             while not self._queue.empty():
-                batch.extend(self._queue.get_nowait())
-            for item in batch:
-                fut, payload = item if isinstance(item, tuple) else (None, item)
+                items.append(self._queue.get_nowait())
+            for fut, payload in items:
                 try:
                     await self._write(payload)
                 except BleakError as e:
+                    self._pending.pop(fut, None)
                     if fut is not None and not fut.done():
                         fut.set_exception(e)
                     self.connected = False
                     self._ready.clear()
-                    raise
-                if fut is not None and not fut.done():
-                    fut.set_result(True)
+                    return
+                if fut is None:
+                    continue
+                # резолвим future только когда записаны все кадры команды
+                left = self._pending.get(fut)
+                if left is not None:
+                    left -= 1
+                    if left <= 0:
+                        self._pending.pop(fut, None)
+                        if not fut.done():
+                            fut.set_result(True)
+                    else:
+                        self._pending[fut] = left
 
     async def _teardown(self) -> None:
         self.connected = False
@@ -205,11 +222,12 @@ class Driver:
             with contextlib.suppress(Exception, asyncio.TimeoutError):
                 await asyncio.wait_for(client.disconnect(), timeout=5.0)
         # будим всех, кто ждал: они повторят после реконнекта
+        self._pending.clear()
         while not self._queue.empty():
             item = self._queue.get_nowait()
-            for sub in (item if isinstance(item, list) else [item]):
-                if isinstance(sub, tuple) and sub[0] is not None and not sub[0].done():
-                    sub[0].set_exception(BleakError("связь с лентой потеряна, переподключаюсь"))
+            fut = item[0] if isinstance(item, tuple) and item else None
+            if isinstance(fut, asyncio.Future) and not fut.done():
+                fut.set_exception(BleakError("связь с лентой потеряна, переподключаюсь"))
         self._emit()
 
     async def _kick(self) -> None:
@@ -237,7 +255,21 @@ class Driver:
         if gap > 0:
             await asyncio.sleep(gap)
         t0 = time.perf_counter()
-        await client.write_gatt_char(P.WRITE_UUID, payload, response=False)
+        # write_gatt_char(response=False) шлёт в dbus без ответа и может зависнуть
+        # навсегда (зависший bluez, потерянный адаптер). без таймаута демон
+        # вставал колом: writer ждал вечно, очередь не двигалась, и все
+        # следующие команды тоже упирались в write timeout. ловим зависание
+        # здесь и роняем соединение, чтобы _teardown поднял новое
+        try:
+            await asyncio.wait_for(
+                client.write_gatt_char(P.WRITE_UUID, payload, response=False),
+                timeout=GATT_WRITE_TIMEOUT,
+            )
+        except asyncio.TimeoutError as e:
+            self.connected = False
+            self._ready.clear()
+            log.warning("запись в ленту зависла на %.1f с, рву соединение", WRITE_TIMEOUT)
+            raise BleakError("запись в ленту зависла, переподключаюсь") from e
         self._last_write = time.monotonic()
         self.last_command_ms = (time.perf_counter() - t0) * 1000
 
@@ -273,9 +305,14 @@ class Driver:
             self._emit()
         await self._await_ready()
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        batch: list[Any] = [(fut, p) for p in payloads]
-        batch.append(fut)
-        self._queue.put_nowait(batch)
+        # в очередь кладём по (future, payload) на каждый кадр. future один на
+        # всю команду, но резолвить его можно только когда записаны все кадры —
+        # иначе set_color ждал бы выхода по первому из двух кадров, а второй
+        # ещё в полёте. раньше третьим элементом батча клался сам future, и
+        # writer писал его в ленту как bytes(future) == b'' лишним пустым кадром
+        self._pending[fut] = len(payloads)
+        for p in payloads:
+            self._queue.put_nowait((fut, p))
         await asyncio.wait_for(fut, timeout=WRITE_TIMEOUT)
 
     async def set_power(self, on: bool) -> None:
@@ -298,14 +335,6 @@ class Driver:
     async def set_effect_speed(self, value: int) -> None:
         value = max(0, min(100, int(value)))
         await self._send([P.effect_speed(value, self.variant)], {"effect_speed": value})
-
-    async def set_kelvin(self, kelvin: int) -> None:
-        v = self.variant
-        warm, cold = P.kelvin_to_warm_cold(kelvin)
-        await self._send(
-            [P.color(255, 255, 255, v), P.color_temp(warm, cold, v)],
-            {"kelvin": int(kelvin), "effect": int(P.Effect.none)},
-        )
 
     async def set_mic(self, enabled: bool) -> None:
         v = self.variant
@@ -365,9 +394,6 @@ class Driver:
             "brightness": lambda: self.set_brightness(kw["value"]),
             "effect": lambda: self.set_effect(kw["value"]),
             "speed": lambda: self.set_effect_speed(kw["value"]),
-            "kelvin": lambda: self.set_kelvin(kw["value"]),
-            "mic": lambda: self.set_mic(bool(kw["on"])),
-            "mic_level": lambda: self.set_mic_level(kw["value"]),
             "schedule": lambda: self.schedule(bool(kw["on"]), int(kw["hour"]),
                                               int(kw["minute"]), int(kw.get("days", 0x7F))),
             "schedule_clear": lambda: self.schedule_clear(bool(kw["on"])),

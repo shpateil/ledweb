@@ -143,7 +143,10 @@ class Variant:
     power_on: bytes = bytes([0x7E, 0x00, 0x04, 0xF0, 0x00, 0x01, 0xFF, 0x00, 0xEF])
     power_off: bytes = bytes([0x7E, 0x00, 0x04, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xEF])
     color_tail: int = 0x00          # P4 в команде цвета
-    color_temp_tail: int = 0x00
+    # температура: по реверсу (RESEARCH_protocol.md:63) кадр 05 02 W C FF 08,
+    # а не 05 02 W C 00 00. с нулями лента не переключалась на тёплый/холодный
+    color_temp_tail: int = 0x08
+    color_temp_p4: int = 0xFF
     brightness_mode: int = 0xFF    # P2 в команде яркости
     effect_speed_tail: tuple[int, int, int] = (0x00, 0x00, 0x00)
     effect_tail: tuple[int, int, int] = (0x03, 0xFF, 0xFF)
@@ -230,7 +233,8 @@ def color_temp(warm: int, cold: int, v: Variant = VARIANTS[DEFAULT_VARIANT]) -> 
     """цветовая температура: warm+cold = 100 (проценты тёплого/холодного)."""
     warm = max(0, min(100, int(warm)))
     cold = max(0, min(100 - warm, int(cold)))
-    return bytes([0x7E, v.len_marker, 0x05, 0x02, warm, cold, 0x00, v.color_temp_tail, 0xEF])
+    return bytes([0x7E, v.len_marker, 0x05, 0x02, warm, cold,
+                  v.color_temp_p4, v.color_temp_tail, 0xEF])
 
 
 def effect(value: int, v: Variant = VARIANTS[DEFAULT_VARIANT]) -> bytes:
@@ -346,8 +350,22 @@ KELVIN_PRESETS: list[tuple[str, int, int, int]] = [
 
 
 def kelvin_to_warm_cold(kelvin: int) -> tuple[int, int]:
-    """грубая, но достаточная шкала 1800K..7000K -> (warm%, cold%)."""
+    """kelvin -> (warm%, cold%) по контрольным точкам KELVIN_PRESETS.
+
+    раньше была линейная шкала 1800..7000, и она разъезжалась с таблицей
+    пресетов почти везде (4000K давало 58/42 вместо заявленных 45/55).
+    теперь между точками интерполяция, так что и пресеты, и любое
+    промежуточное значение сходятся с тем, что показывает интерфейс
+    """
     k = max(1800, min(7000, int(kelvin)))
-    warm = int(round(100 - (k - 1800) / (7000 - 1800) * 100))
-    warm = max(0, min(100, warm))
-    return warm, 100 - warm
+    pts = KELVIN_PRESETS
+    if k <= pts[0][1]:
+        return pts[0][2], pts[0][3]
+    if k >= pts[-1][1]:
+        return pts[-1][2], pts[-1][3]
+    for (n0, k0, w0, _), (n1, k1, w1, _) in zip(pts, pts[1:]):
+        if k0 <= k <= k1:
+            t = (k - k0) / (k1 - k0)
+            warm = int(round(w0 + (w1 - w0) * t))
+            return max(0, min(100, warm)), 100 - max(0, min(100, warm))
+    return 50, 50

@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-DATA_DIR = os.path.expanduser("~/.config/ledweb")
+DATA_DIR = os.path.expanduser("%h/.config/ledweb")
 PRESETS_FILE = os.path.join(DATA_DIR, "presets.json")
 RULES_FILE = os.path.join(DATA_DIR, "rules.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
@@ -97,7 +97,14 @@ class Store:
         self.presets: list[Preset] = [
             Preset(**p) for p in _load(PRESETS_FILE, [asdict(p) for p in DEFAULT_PRESETS])
         ] or list(DEFAULT_PRESETS)
-        self.rules: list[Rule] = _load(RULES_FILE, [])
+        # правила лежат на диске словарями, а дальше по коду идут как объекты.
+        # раньше сюда клался сырой список dict, и list_rules() падал с
+        # AttributeError: 'dict' object has no attribute 'to_dict'
+        self.rules: list[Rule] = [
+            r if isinstance(r, Rule) else Rule(**{k: v for k, v in r.items()
+                                                  if k in Rule.__dataclass_fields__})
+            for r in _load(RULES_FILE, [])
+        ]
         self.settings: dict[str, Any] = _load(SETTINGS_FILE, {
             "variant": "generic",
             "mac": "AA:BB:CC:DD:EE:FF",

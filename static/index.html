@@ -50,11 +50,6 @@
           <label>яркость <b class="num" id="bval">100</b></label>
           <input type="range" id="bright" min="0" max="100" value="100" aria-label="яркость">
         </div>
-
-        <div class="ctl">
-          <label>цвет температуры <b class="num" id="kval">—</b></label>
-          <input type="range" id="kelvin" min="1800" max="7000" step="100" value="4000" aria-label="температура">
-        </div>
       </div>
     </div>
 
@@ -113,20 +108,6 @@
     </div>
     <p class="muted tiny">эти эффекты считает демон и шлёт ленте пакетами. встроенные
     в прошивку работают на всех ревизиях, эти — всегда одинаково</p>
-  </section>
-
-  <!-- ── микрофон ───────────────────────────────────────────────── -->
-  <section class="card">
-    <div class="card-head">
-      <h2>реакция на звук</h2>
-      <button class="toggle" id="mic" role="switch" aria-checked="false">
-        <span class="knob"></span>
-      </button>
-    </div>
-    <div class="ctl wide" id="mic-wrap">
-      <label>чувствительность <b class="num" id="mval">50</b></label>
-      <input type="range" id="miclevel" min="0" max="100" value="50" aria-label="чувствительность микрофона">
-    </div>
   </section>
 
   <!-- ── расписание ─────────────────────────────────────────────── -->
