@@ -8,7 +8,7 @@ Type=simple
 # -N не запускает команду, -R пробрасывает порт с v3 на локальный демон.
 # RemoteForward 127.0.0.1:8191 — слушаем только на localhost v3, наружу не
 # светится: gatewayports no на сервере, и мы туда не лезем
-ExecStart=/usr/bin/ssh -F ~/.ssh/ledweb-tunnel \
+ExecStart=/usr/bin/ssh -F %h/.ssh/ledweb-tunnel \
     -N \
     -R 127.0.0.1:8191:127.0.0.1:8099 \
     -o ServerAliveInterval=20 \
