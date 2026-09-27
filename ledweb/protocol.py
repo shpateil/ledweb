@@ -125,6 +125,12 @@ EFFECT_NAMES_RU: dict[int, str] = {
     Effect.mic_rolling: "микрофон: волна",
 }
 
+def is_mic_effect(e: "Effect") -> bool:
+    """микрофонные режимы прошивки. в панель не показываем: звук из проекта
+    убран, но enum остался полным, и список эффектов строился из всего."""
+    return 0x80 <= int(e) <= 0x87
+
+
 # эффекты, которые не трогают заданный цвет (тот, который лента помнит)
 COLORLESS_EFFECTS = {int(Effect.mic_erobic), int(Effect.mic_rhythm),
                       int(Effect.mic_spectrum), int(Effect.mic_rolling)}

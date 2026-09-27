@@ -70,14 +70,6 @@
     </div>
   </section>
 
-  <!-- ── сцены ──────────────────────────────────────────────────── -->
-  <section class="card">
-    <div class="card-head">
-      <h2>сцены</h2>
-    </div>
-    <div class="scenes" id="scenes"></div>
-  </section>
-
   <!-- ── палитры ────────────────────────────────────────────────── -->
   <section class="card">
     <div class="card-head">
@@ -130,13 +122,11 @@
           <option value="color">цвет</option>
           <option value="brightness">яркость</option>
           <option value="power">вкл/выкл</option>
-          <option value="scene">сцена</option>
           <option value="effect">эффект</option>
         </select>
         <input type="time" id="s-time" value="07:00" aria-label="время">
         <input type="color" id="s-color" value="#ff4081" aria-label="цвет">
         <input type="number" id="s-val" value="100" min="0" max="100" aria-label="значение" class="hidden">
-        <select id="s-scene" class="hidden" aria-label="сцена"></select>
         <select id="s-effect" class="hidden" aria-label="эффект"></select>
         <button class="btn primary" id="s-add"><i data-lucide="plus"></i>добавить</button>
       </div>
@@ -202,7 +192,6 @@
         <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>оттенок</td></tr>
         <tr><td><kbd>shift</kbd>+<kbd>←→</kbd></td><td>насыщенность</td></tr>
         <tr><td><kbd>e</kbd></td><td>эффекты</td></tr>
-        <tr><td><kbd>s</kbd></td><td>сцены</td></tr>
         <tr><td><kbd>t</kbd></td><td>таймер</td></tr>
         <tr><td><kbd>?</kbd></td><td>эта подсказка</td></tr>
       </table>

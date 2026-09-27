@@ -57,7 +57,8 @@ PROBE = (
     " text: b ? (document.getElementById('link-warn-text')||{}).textContent : null,"
     " btn: !!document.getElementById('btn-reconnect'),"
     " icons: document.querySelectorAll('svg').length,"
-    " scenes: document.querySelectorAll('.scene').length,"
+    " pal: document.querySelectorAll('.pal').length,"
+    " scenes: document.querySelectorAll('.scene, #scenes').length,"
     " errs: (window.__errs||[]).length }; })()"
 )
 
@@ -125,10 +126,14 @@ def main():
     cdp = Cdp(open_tab())
     time.sleep(4)
     v = cdp.js(PROBE)
-    check("страница загрузилась", v.get("scenes", 0) > 0, f"сцен {v.get('scenes')}")
+    # сцен убрали, страница считается загруженной по палитре и эффектам
+    check("страница загрузилась", v.get("pal", 0) > 0, f"палитра {v.get('pal')}")
+    check("сцен на странице нет", v.get("scenes", 0) == 0, f"сцен {v.get('scenes')}")
     # ВАЖНО: createIcons заменяет <i data-lucide> на <svg>, поэтому
     # '[data-lucide] svg' всегда пусто. считаем сами svg
-    check("иконки отрисованы", v.get("icons", 0) > 10, f"{v.get('icons')}")
+    # порог был > 10, пока в шапке жили 12 сцен с иконками. сцен убрали,
+    # иконок закономерно меньше — жёсткий порог тут врал бы в обе стороны
+    check("иконки отрисованы", v.get("icons", 0) >= 8, f"{v.get('icons')}")
     check("js-ошибок нет", v.get("errs", 0) == 0, f"{v.get('errs')}")
     check("баннер спрятан при связи", v.get("hidden") is True)
     check("кнопка реконнекта есть", v.get("btn") is True)

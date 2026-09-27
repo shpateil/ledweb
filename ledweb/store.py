@@ -1,4 +1,4 @@
-"""состояние, пресеты, сцены, расписание. чистый python, без внешних зависимостей."""
+"""состояние, пресеты, расписание. чистый python, без внешних зависимостей."""
 
 from __future__ import annotations
 
@@ -12,22 +12,6 @@ DATA_DIR = os.path.expanduser("%h/.config/ledweb")
 PRESETS_FILE = os.path.join(DATA_DIR, "presets.json")
 RULES_FILE = os.path.join(DATA_DIR, "rules.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
-
-# сцены — готовые наборы состояний, применяются одним кликом
-SCENES: list[dict[str, Any]] = [
-    {"id": "wake", "name": "подъём", "icon": "sunrise", "color": (255, 190, 120), "brightness": 60, "effect": 0},
-    {"id": "work", "name": "работа", "icon": "laptop", "color": (255, 255, 255), "brightness": 100, "effect": 0},
-    {"id": "evening", "name": "вечер", "icon": "lamp", "color": (255, 150, 60), "brightness": 45, "effect": 0},
-    {"id": "night", "name": "сон", "icon": "moon", "color": (60, 20, 120), "brightness": 12, "effect": 0},
-    {"id": "movie", "name": "кино", "icon": "clapperboard", "color": (120, 20, 180), "brightness": 15, "effect": 142},
-    {"id": "game", "name": "игры", "icon": "gamepad-2", "color": (0, 200, 255), "brightness": 70, "effect": 148},
-    {"id": "party", "name": "тусовка", "icon": "party-popper", "color": (255, 0, 128), "brightness": 90, "effect": 136},
-    {"id": "focus", "name": "фокус", "icon": "target", "color": (0, 255, 160), "brightness": 80, "effect": 0},
-    {"id": "relax", "name": "релакс", "icon": "waves", "color": (0, 120, 255), "brightness": 30, "effect": 146},
-    {"id": "alarm", "name": "будильник", "icon": "alarm-clock", "color": (255, 255, 255), "brightness": 100, "effect": 156},
-    {"id": "disco", "name": "диско", "icon": "disc-3", "color": (255, 0, 200), "brightness": 80, "effect": 145},
-    {"id": "aurora", "name": "северное сияние", "icon": "waves", "color": (0, 255, 200), "brightness": 55, "effect": 143},
-]
 
 
 def _load(path: str, default: Any) -> Any:
@@ -82,7 +66,7 @@ class Rule:
     """правило автоматизации."""
     id: str
     time: str                       # "07:30" или "sunset" / "sunrise"
-    action: dict[str, Any]          # {"kind": "color"|"power"|"brightness"|"scene"|"effect", ...}
+    action: dict[str, Any]          # {"kind": "color"|"power"|"brightness"|"effect", ...}
     days: int = 0x7F
     enabled: bool = True
     name: str = ""

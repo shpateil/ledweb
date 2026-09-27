@@ -53,9 +53,6 @@ class State:
     brightness: int = 100
     effect: int = int(P.Effect.none)
     effect_speed: int = 50
-    kelvin: int | None = None
-    mic: bool = False
-    mic_level: int = 50
     updated_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -406,7 +403,7 @@ class Driver:
         v = self.variant
         await self._send(
             [P.single_color(0, v), P.color(r, g, b, v)],
-            {"color": (r, g, b), "effect": int(P.Effect.none), "kelvin": None},
+            {"color": (r, g, b), "effect": int(P.Effect.none)},
         )
 
     async def set_brightness(self, value: int) -> None:
@@ -419,20 +416,6 @@ class Driver:
     async def set_effect_speed(self, value: int) -> None:
         value = max(0, min(100, int(value)))
         await self._send([P.effect_speed(value, self.variant)], {"effect_speed": value})
-
-    async def set_mic(self, enabled: bool) -> None:
-        v = self.variant
-        payloads = [P.mic_on(enabled, v)]
-        patch: dict[str, Any] = {"mic": enabled}
-        if enabled:
-            effect = int(P.Effect.mic_spectrum)
-            payloads += [P.mic_level(self.state.mic_level, v), P.effect(effect, v)]
-            patch["effect"] = effect
-        await self._send(payloads, patch)
-
-    async def set_mic_level(self, value: int) -> None:
-        value = max(0, min(100, int(value)))
-        await self._send([P.mic_level(value, self.variant)], {"mic_level": value})
 
     async def schedule(self, on: bool, hour: int, minute: int, days: int) -> None:
         await self._send([P.schedule(on, hour, minute, days, True, self.variant)])

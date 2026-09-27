@@ -58,7 +58,7 @@ const hex2rgb = (hex) => {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
-// всё, что пришло с сервера (имена пресетов, названия сцен, адреса), идёт
+// всё, что пришло с сервера (имена пресетов, названия эффектов, адреса), идёт
 // в разметку через innerHTML. без экранирования имя вида <img onerror=...>
 // выполняется. экранируем каждый раз перед вставкой
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
@@ -270,28 +270,6 @@ const live = (el, fn) => {
 live($('#bright'), (v, commit) => { if (commit) apply('brightness', { value: v }, { quiet: true }); else { S.state && (S.state.brightness = v); render(); } });
 live($('#speed'),  (v, commit) => { if (commit) apply('speed', { value: v }, { quiet: true }); else { S.state && (S.state.effect_speed = v); render(); } });
 
-/* ── сцены ─────────────────────────────────────────────────────── */
-function renderScenes() {
-  const box = $('#scenes');
-  box.innerHTML = '';
-  (S.meta?.scenes || []).forEach(sc => {
-    const hex = sc.color;
-    const b = document.createElement('button');
-    b.className = 'scene';
-    b.innerHTML = `<div class="row">
-        <span class="leddot" style="background:${safeColor(hex)}"></span>
-        <i data-lucide="${esc(sc.icon)}"></i></div>
-      <b>${esc(sc.name)}</b>
-      <span class="meta">${esc(sc.brightness)}%${sc.effect ? ' · эффект' : ''}</span>`;
-    b.addEventListener('click', async () => {
-      try { ingest(await api('/api/scene', { method: 'POST', body: { id: sc.id } })); toast(`сцена: ${sc.name}`); }
-      catch (e) { toast(e.message, true); }
-    });
-    box.appendChild(b);
-  });
-  refreshIcons();
-}
-
 /* ── палитры ────────────────────────────────────────────────────── */
 let paletteToken = 0;   // защита от гонки: поздний await не должен дописывать
                         // пресеты в уже перерисованную вкладку
@@ -405,7 +383,6 @@ async function renderRules() {
     if (a.kind === 'color') what = `цвет ${a.hex || ''}`;
     else if (a.kind === 'brightness') what = `яркость ${a.value}`;
     else if (a.kind === 'power') what = a.on ? 'включить' : 'выключить';
-    else if (a.kind === 'scene') what = `сцена ${a.name || a.id}`;
     else if (a.kind === 'effect') what = `эффект ${a.name || a.value}`;
     const days = [...rule.days.toString(2).padStart(7, '0')].reverse()
       .map((bit, i) => bit === '1' ? dayNames[i] : null).filter(Boolean).join(' ');
@@ -425,7 +402,6 @@ on('#s-on', 'change', () => {
   const kind = $('#s-on').value;
   $('#s-color').classList.toggle('hidden', kind !== 'color');
   $('#s-val').classList.toggle('hidden', kind !== 'brightness');
-  $('#s-scene').classList.toggle('hidden', kind !== 'scene');
   $('#s-effect').classList.toggle('hidden', kind !== 'effect');
 });
 
@@ -435,7 +411,6 @@ on('#s-add', 'click', async () => {
   if (kind === 'color') { action.hex = $('#s-color').value; action.rgb = hex2rgb(action.hex); }
   if (kind === 'brightness') action.value = +$('#s-val').value;
   if (kind === 'power') action.on = true;
-  if (kind === 'scene') { action.id = $('#s-scene').value; action.name = $('#s-scene').selectedOptions[0]?.textContent; }
   if (kind === 'effect') { action.value = +$('#s-effect').value; action.name = $('#s-effect').selectedOptions[0]?.textContent; }
   if (!S.days) { toast('выбери дни', true); return; }
   try {
@@ -636,7 +611,6 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (k === 'e') { $('#effects').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
-  if (k === 's') { $('#scenes').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
   if (k === 't') { $('#t-min').focus(); toast('введи минуты и жми «запустить»'); return; }
   if (k === '?') { openSheet($('#sheet').hidden); return; }
   if (k === 'Escape') { openSheet(false); }
@@ -699,11 +673,8 @@ setInterval(async () => {
     S.meta = await api('/api/meta');
     $('#s-variant').innerHTML = S.meta.variants.map(v =>
       `<option value="${esc(v)}"${v === 'generic' ? ' selected' : ''}>${esc(v)}</option>`).join('');
-    $('#s-scene').innerHTML = S.meta.scenes.map(s =>
-      `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     $('#s-effect').innerHTML = S.meta.effects.map(e =>
       `<option value="${esc(e.value)}">${esc(e.name)}</option>`).join('');
-    renderScenes();
     renderEffects();
     renderFx();
     renderDays();

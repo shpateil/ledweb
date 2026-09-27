@@ -91,7 +91,10 @@ def main():
     check("нет kval", not ev("document.querySelector('#kval')"))
 
     print("\n── контент ──")
-    check("сцены", ev("document.querySelectorAll('#scenes .scene').length") >= 12)
+    # сцены убраны по требованию: в разметке, в js и в api их быть не должно.
+    # если они вернутся случайно — это регресс, а не фича
+    check("сцен нет ни в разметке, ни в js",
+          ev("document.querySelectorAll('.scene, #scenes').length") == 0)
     check("софт-эффекты", ev("document.querySelectorAll('#fx-grid .eff').length") == 11)
     check("встроенные эффекты", ev("document.querySelectorAll('#effects .eff').length") > 20)
     over = ev("document.documentElement.scrollWidth - document.documentElement.clientWidth")

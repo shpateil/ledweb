@@ -210,29 +210,10 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ── сцены ──────────────────────────────────────────────────────── */
-.scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: var(--sp-4); }
-.scene {
-  display: flex; flex-direction: column; gap: var(--sp-4);
-  padding: var(--sp-5); border-radius: var(--r-sm);
-  border: 1px solid var(--line); background: var(--field);
-  text-align: left;
-  transition: border-color var(--t-fast) var(--e-out), background var(--t-fast) var(--e-out),
-              transform var(--t-fast) var(--e-out);
-}
-.scene:hover { border-color: var(--line-2); background: var(--raised); transform: translateY(-1px); }
-.scene .row { display: flex; align-items: center; gap: var(--sp-4); }
-.scene i { width: 14px; height: 14px; }
-.scene .leddot {
-  width: 16px; height: 16px; border-radius: var(--r-full); border: 1px solid var(--line);
-}
-.scene b { font-size: var(--fs-13); font-weight: var(--fw-medium); }
-.scene .meta { font-size: var(--fs-11); color: var(--tx-2); }
-
 /* вторичный текст на тёмном фоне был слишком тусклым — поднимаем на ступень */
 .muted { color: var(--tx-2); }
 .tiny { font-size: var(--fs-11); }
-.eff .code, .scene .meta { opacity: .95; }
+.eff .code { opacity: .95; }
 
 /* ── эффекты ────────────────────────────────────────────────────── */
 .effects { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--sp-4); }
@@ -375,7 +356,6 @@ kbd {
   .wrap { padding: var(--sp-6) var(--sp-5) 56px; }
   .top { padding: 0 var(--sp-5); }
   .palette { grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); }
-  .scenes { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
 }
 @media (max-width: 520px) {
   .swatch-meta { left: var(--sp-5); bottom: var(--sp-5); }

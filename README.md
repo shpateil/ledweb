@@ -35,7 +35,7 @@ bluetoothctl devices | grep -i elk
 * цвет: hsv-колесо, палитры, hex, свои пресеты
 * 11 своих эффектов — считаются на хосте, в прошивке их нет
 * эффекты прошивки, скорость, яркость
-* сцены, расписание по дням недели, таймер выключения
+* расписание по дням недели, таймер выключения
 * горячие клавиши, тёмная тема, мобильная вёрстка
 * rest + sse: состояние живёт в демоне, вкладку можно закрыть
 
@@ -77,12 +77,11 @@ bluetoothctl devices | grep -i elk
 | путь | что |
 |---|---|
 | `GET /api/state` | состояние |
-| `GET /api/meta` | эффекты, палитры, сцены, дни |
+| `GET /api/meta` | эффекты, палитры, дни |
 | `POST /api/apply` | `{"action":"color","h":270,"s":1,"v":1}` |
 | `POST /api/fx` | свой эффект |
 | `POST /api/fx/stop` | остановить |
 | `GET POST DELETE /api/timer` | таймер |
-| `POST /api/scene` | сцена по id |
 | `GET POST PATCH DELETE /api/presets` | пресеты |
 | `GET POST DELETE /api/rules` | расписание |
 | `GET /api/scan` | поиск лент |
@@ -93,7 +92,7 @@ bluetoothctl devices | grep -i elk
 
 ```
 ledweb/
-├── protocol.py   байт-коды, палитры, сцены
+├── protocol.py   байт-коды, палитры
 ├── driver.py     соединение, очередь, кэш, реконнект
 ├── fx.py         свои эффекты
 ├── store.py      пресеты, правила, настройки
@@ -109,7 +108,7 @@ ledweb/
 ```bash
 chromium --headless --remote-debugging-port=9222 --remote-allow-origins='*' about:blank &
 .venv/bin/python examples/qa_check.py   # вёрстка, консоль, скролл, шторка
-.venv/bin/python examples/qa_live.py    # клики: цвет, сцены, эффекты, настройки
+.venv/bin/python examples/qa_live.py    # клики: цвет, палитра, эффекты, настройки
 .venv/bin/python examples/test_queue.py # очередь команд без железа
 .venv/bin/python examples/qa_xss.py     # экранирование имён из api
 .venv/bin/python examples/test_watchdog.py # сторож: лента отвалилась -> поднимает связь

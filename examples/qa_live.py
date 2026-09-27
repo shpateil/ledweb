@@ -1,4 +1,4 @@
-"""живая проверка кликов: цвет, сцены, настройки, температура, эффекты.
+"""живая проверка кликов: цвет, палитра, настройки, эффекты.
 после каждого клика сверяется ОТВЕТ СЕРВЕРА, а не оптимистичная перерисовка."""
 import json
 import time
@@ -85,17 +85,54 @@ def main():
     check("ui совпал с сервером", ui.strip().lower() == srv.lower(),
           f"ui={ui.strip()} сервер={srv}")
 
-    print("\n── клик по сцене ──")
+    print("\n── палитра применяет цвет ──")
+    # сцены убрали, но клик по клеточке палитры шлёт тот же /api/apply с hex.
+    # проверять надо именно серверный ответ: оптимистичный paint рисует цвет
+    # мгновенно и покажет успех даже при мёртвой записи
     before = api("/api/state").get("color", {}).get("hex")
-    ev("""(() => {
-        const b = document.querySelectorAll('#scenes .scene')[2];
-        b && b.click();
-        return true; })()""")
+    # палитра рендерится асинхронно, ждём клетки
+    cells = 0
+    for _ in range(20):
+        cells = ev("document.querySelectorAll('.pal').length") or 0
+        if cells:
+            break
+        time.sleep(0.4)
+    check("в палитре есть клетки", cells > 0, f"клеток {cells}")
+    # берём кл��тку, чей фон отличается от текущего цвета: клик по клетке
+    # того же цвета дал бы «изменение == старое» и ложный провал
+    hit = ev(
+        "(() => {"
+        "  const want = '%s'.toLowerCase();"
+        "  const bs = [...document.querySelectorAll('.pal')];"
+        "  for (const b of bs) {"
+        "    const i = b.querySelector('i');"
+        "    if (!i) continue;"
+        r"    const rgb = getComputedStyle(i).backgroundColor.match(/\d+/g);"
+        "    if (!rgb) continue;"
+        "    const hex = '#' + rgb.slice(0, 3).map(n => (+n).toString(16).padStart(2, '0')).join('');"
+        "    if (hex !== want) { b.click(); return hex; }"
+        "  }"
+        "  return null;"
+        "})()" % (before or "").lower()
+    )
+    check("нашлась клетка другого цвета", bool(hit), f"клик по {hit}")
     time.sleep(1.6)
     st = api("/api/state")
     after = st.get("color", {}).get("hex")
-    check("сцена изменила состояние", st.get("_http") is None and after != before or True,
-          f"{before} -> {after}")
+    check("палитра изменила цвет на сервере", after != before, f"{before} -> {after}")
+    # сверяем по компонентам, а не по hex: getComputedStyle отдаёт цвет
+    # фона клетки, а на hover подсветка меняет яркость, и #000000 против
+    # #050505 — тот же самый цвет. сравнение строк врало бы
+    if hit and after:
+        rgb = tuple(int(after.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        want = tuple(int(str(hit).lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        delta = max(abs(a - b) for a, b in zip(rgb, want))
+        check("цвет совпал с клеткой", delta <= 8,
+              f"клетка {hit}, сервер {after}, расхождение {delta}")
+    else:
+        check("цвет совпал с клеткой", False, f"клетка {hit}, сервер {after}")
+    check("лента на связи во время клика", st.get("connected") is True,
+          f"connected={st.get('connected')}")
 
     print("\n── софтверный эффект ──")
     # перед стартом гасим всё: клик по уже активной кнопке означает «стоп»,

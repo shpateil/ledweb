@@ -22,7 +22,7 @@ from . import fx as FX
 from . import protocol as P
 from .driver import Device, Driver
 from .fx import Engine
-from .store import SCENES, Store
+from .store import Store
 
 log = logging.getLogger("ledweb.server")
 
@@ -210,9 +210,12 @@ class Server:
         @r("GET", "/api/meta")
         async def _meta(_q, _rq):
             return jsonr({
+                # микрофонные режимы прошивки (0x80-0x87) в панель не
+                # попадают: звук из проекта убран, ленте он тут не нужен,
+                # а список эффектов всё равно строится из всего enum
                 "effects": [
                     {"value": int(e), "name": P.EFFECT_NAMES_RU.get(int(e), f"режим {int(e):#x}")}
-                    for e in P.Effect
+                    for e in P.Effect if not P.is_mic_effect(e)
                 ],
                 "palettes": {
                     "material": [{"name": n, "hex": f"#{r:02x}{g:02x}{b:02x}",
@@ -224,8 +227,6 @@ class Server:
                                         if _ == n]}
                              for n, r, g, b in P.PALETTE_MOOD],
                 },
-                    "scenes": [dict(s, color=f"#{s['color'][0]:02x}{s['color'][1]:02x}{s['color'][2]:02x}")
-                           for s in SCENES],
                 "variants": list(P.VARIANTS.keys()),
                 "fx": [{"key": k, "name": FX.EFFECTS[k]["name"], "fps": FX.EFFECTS[k]["fps"]}
                        for k in FX.ORDER],
@@ -241,9 +242,9 @@ class Server:
         async def _apply(_q, rq):
             data = rq.json()
             action = data.get("action", "")
-            # прямая команда цвета/яркости/сцены гасит софтверный эффект:
+            # прямая команда цвета/яркости/питания гасит софтверный эффект:
             # иначе цикл продолжит перекрашивать ленту поверх выбора юзера
-            if action in ("color", "brightness", "power", "scene"):
+            if action in ("color", "brightness", "power"):
                 if not (action == "color" and data.get("fx")):
                     self.fx.stop()
             # одна попытка: реконнектом занимается фоновой поток драйвера,
@@ -291,20 +292,6 @@ class Server:
         @r("DELETE", "/api/timer")
         async def _timer_off(_q, _rq):
             return jsonr(self.set_timer(None))
-
-        @r("POST", "/api/scene")
-        async def _scene(_q, rq):
-            sid = rq.json().get("id")
-            scene = next((s for s in SCENES if s["id"] == sid), None)
-            if not scene:
-                return jsonr({"error": "нет такой сцены"}, 404)
-            d = self.driver
-            r, g, b = scene["color"]
-            await d.set_color(r, g, b)
-            await d.set_brightness(scene["brightness"])
-            if scene["effect"]:
-                await d.set_effect(scene["effect"])
-            return jsonr(self.driver.snapshot())
 
         @r("GET", "/api/presets")
         async def _presets(_q, _rq):
