@@ -1,0 +1,26 @@
+{
+  "name": "ledweb — панель ленты",
+  "short_name": "ledweb",
+  "description": "управление светодиодной лентой elk-bledom",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a0c",
+  "theme_color": "#0a0a0c",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
