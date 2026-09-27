@@ -4,10 +4,28 @@
 виснут. и что _open() не может висеть вечно.
 """
 import asyncio
+import os
 import sys
 import time
 
-sys.path.insert(0, "%h/ledweb")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# bleak не нужен для этих проверок, но драйвер импортирует его на верхнем
+# уровне. подменяем заглушкой, чтобы тесты шли на голом питоне без venv
+try:
+    import bleak  # noqa: F401
+except ImportError:
+    import types
+    _bleak = types.ModuleType("bleak")
+    _bleak.BleakClient = object
+    _bleak.BleakScanner = object
+    _exc = types.ModuleType("bleak.exc")
+    for _name in ("BleakDBusError", "BleakDeviceNotFoundError", "BleakError"):
+        setattr(_exc, _name, type(_name, (Exception,), {}))
+    _bleak.exc = _exc
+    sys.modules["bleak"] = _bleak
+    sys.modules["bleak.exc"] = _exc
+
 from ledweb import driver as D
 
 ok = 0
@@ -113,13 +131,15 @@ async def main():
                   "disconnect": staticmethod(lambda self: asyncio.sleep(0))})()
     d3.dev.sync_time = False
     d3.on_change = None        # _open дергает колбэк, в фейке его нет
-    # NOTIFY_TIMEOUT ставим маленький, чтобы тест был быстрым
+    # NOTIFY_TIMEOUT ставим маленьким, чтобы тест был быстрым
     D.NOTIFY_TIMEOUT = 0.2
     t0 = time.monotonic()
+    # три исхода разделены явно. раньше здесь стоял check(..., True, ...) внутри
+    # try, то есть успешный возврат и неожиданное исключение выглядели бы
+    # одинаково, а исключение к тому же не останавливало остальные проверки
     try:
         await asyncio.wait_for(d3._open(), timeout=3.0)
-        elapsed = time.monotonic() - t0
-        check("_open вернулся, не завис", True, f"{elapsed:.2f} с")
+        check("_open вернулся, не завис", True, f"{time.monotonic() - t0:.2f} с")
     except asyncio.TimeoutError:
         check("_open вернулся, не завис", False, "висит дольше 3 с")
     except Exception as e:

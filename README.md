@@ -105,19 +105,28 @@ ledweb/
 
 ## тесты
 
+без железа и без venv, на голом питоне 3:
+
+```bash
+python3 examples/test_queue.py     # очередь команд, порядок кадров, без пустых
+python3 examples/test_watchdog.py  # сторож рвёт зависшую запись, _open не виснет
+```
+
+эти два подменяют `bleak` заглушкой и подставляют фейкового клиента, лента и
+bluez не нужны. каждый возвращает код выхода 1 если что-то провалилось.
+
+остальные ждут cdp на 9222, а `test_linkwarn` рвёт ble по-настоящему:
+
 ```bash
 chromium --headless --remote-debugging-port=9222 --remote-allow-origins='*' about:blank &
 .venv/bin/python examples/qa_check.py   # вёрстка, консоль, скролл, шторка
 .venv/bin/python examples/qa_live.py    # клики: цвет, палитра, эффекты, настройки
-.venv/bin/python examples/test_queue.py # очередь команд без железа
 .venv/bin/python examples/qa_xss.py     # экранирование имён из api
-.venv/bin/python examples/test_watchdog.py # сторож: лента отвалилась -> поднимает связь
-.venv/bin/python examples/qa_icons.py      # иконки отрисованы, не пустые
+.venv/bin/python examples/qa_icons.py   # иконки отрисованы, не пустые
 .venv/bin/python examples/test_linkwarn.py # панель показывает обрыв и ждёт реконнекта
 ```
 
-последние два и `test_linkwarn` ждут cdp на 9222 и рвут ble по-настоящему,
-так что запускать их лучше на живой ленте и не в паре с другими ble-клиентами.
+`test_linkwarn` лучше запускать на живой ленте и не в паре с другими ble-клиентами.
 
 ## лицензия
 
