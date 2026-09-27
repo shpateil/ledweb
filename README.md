@@ -112,7 +112,13 @@ chromium --headless --remote-debugging-port=9222 --remote-allow-origins='*' abou
 .venv/bin/python examples/qa_live.py    # клики: цвет, сцены, эффекты, настройки
 .venv/bin/python examples/test_queue.py # очередь команд без железа
 .venv/bin/python examples/qa_xss.py     # экранирование имён из api
+.venv/bin/python examples/test_watchdog.py # сторож: лента отвалилась -> поднимает связь
+.venv/bin/python examples/qa_icons.py      # иконки отрисованы, не пустые
+.venv/bin/python examples/test_linkwarn.py # панель показывает обрыв и ждёт реконнекта
 ```
+
+последние два и `test_linkwarn` ждут cdp на 9222 и рвут ble по-настоящему,
+так что запускать их лучше на живой ленте и не в паре с другими ble-клиентами.
 
 ## лицензия
 

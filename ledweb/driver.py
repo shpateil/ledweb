@@ -33,6 +33,14 @@ WRITE_TIMEOUT = 8.0     # сколько ждём выполнения кома�
 GATT_WRITE_TIMEOUT = 2.0  # сколько ждём саму запись в ленту. dbus-вызов без
                           # ответа может висеть вечно на зависшем bluez, и если
                           # не ограничить — writer встанет колом навсегда
+WATCHDOG_INTERVAL = 20.0   # как часто сторож проверяет связь
+WATCHDOG_IDLE = 120.0      # столько простоя считается нормой, команд не было
+WATCHDOG_STUCK = 30.0      # очередь не двигается дольше этого — связь мертва
+OPEN_TIMEOUT = 45.0     # весь _open() целиком, включая 4 попытки и кики
+DROP_TIMEOUT = 3.0       # disconnect в тот же dbus и тоже умеет не вернуться
+NOTIFY_TIMEOUT = 3.0     # подписка на fff4. лента её не поддерживает и иногда
+                         # не возвращает ответ вовсе, а без таймаута весь
+                         # цикл подключения зависал навсегда
 READY_TIMEOUT = 14.0    # сколько ждём, пока фоновый поток поднимет соединение
 RECONNECT_BACKOFF = (0.4, 0.8, 1.6, 3.0, 5.0, 8.0)
 IDLE_POLL = 0.5         # как часто проверять, что соединение ещё живо
@@ -67,6 +75,27 @@ class Device:
     sync_time: bool = True
 
 
+def _parse_color(kw: dict[str, Any]) -> tuple[int, int, int]:
+    """достаёт rgb из запроса. раньше тут был только hsv, и запрос с одним
+    hex молча давал чистый красный: h=0, s=1, v=1 по умолчанию. фронт шлёт
+    сразу hex и rgb, поэтому там работало, а любой другой клиент получал
+    не тот цвет и без единой ошибки.
+    """
+    if kw.get("rgb"):
+        seq = list(kw["rgb"])
+        if len(seq) == 3:
+            return tuple(max(0, min(255, int(x))) for x in seq)   # type: ignore[return-value]
+    hx = kw.get("hex")
+    if hx:
+        s = str(hx).lstrip("#")
+        if len(s) == 3:                      # краткая запись #f0a
+            s = "".join(c * 2 for c in s)
+        if len(s) == 6 and all(c in "0123456789abcdefABCDEF" for c in s):
+            return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+        raise ValueError(f"не понял цвет {hx!r}, жду #rrggbb или #rgb")
+    return hsv_to_rgb(kw.get("h", 0), kw.get("s", 1.0), kw.get("v", 1.0))
+
+
 class Driver:
     def __init__(self, dev: Device, on_change: Callable[[State], None] | None = None):
         self.dev = dev
@@ -79,9 +108,10 @@ class Driver:
         self.variant: P.Variant = P.VARIANTS[dev.variant]
 
         self._client: BleakClient | None = None
-        self._last_write = 0.0
+        self._last_write = time.monotonic()   # с этого момента и считаем простой
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._watch: asyncio.Task | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
         self._pending: dict[asyncio.Future, int] = {}   # future → сколько кадров осталось
         self._notify: list[bytes] = []
@@ -90,9 +120,42 @@ class Driver:
     # ── жизненный цикл ──────────────────────────────────────────────
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="led-driver")
+        self._watch = asyncio.create_task(self._watchdog(), name="led-watchdog")
+
+    async def _watchdog(self) -> None:
+        """сторож: следит, что связь реально живая, а не только помечена как живая.
+
+        без него демон мог простоять сутки с `connected: true`, не сумев ни
+        одной записи: состояние врало, панель показывала «всё ок», а лента не
+        реагировала. если очередь не двигалась дольше порога — рвём соединение,
+        и фоновый цикл поднимает новое.
+        """
+        while not self._stop.is_set():
+            await asyncio.sleep(WATCHDOG_INTERVAL)
+            if self._stop.is_set():
+                return
+            if self._client is None or not self._client.is_connected:
+                continue                      # этим занимается _run
+            if self._queue.empty() and time.monotonic() - self._last_write < WATCHDOG_IDLE:
+                continue                      # просто давно не было команд
+            # команды висят в очереди дольше порога — пишем не отвечает
+            if time.monotonic() - self._last_write > WATCHDOG_STUCK:
+                log.warning("завис %s с при непустой очереди, рву соединение", WATCHDOG_STUCK)
+                self.connected = False
+                self.last_error = "запись в ленту не отвечает"
+                self._ready.clear()
+                self._emit()      # без этого фронт не узнает об обрыве
+                client, self._client = self._client, None
+                if client is not None:
+                    with contextlib.suppress(Exception, asyncio.TimeoutError):
+                        await asyncio.wait_for(client.disconnect(), timeout=3.0)
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._watch:
+            self._watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._watch
         if self._task:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -107,7 +170,10 @@ class Driver:
                 await asyncio.sleep(1)
                 continue
             try:
-                await self._open()
+                # каждый шаг под таймаутом. любая из этих функций при зависшем
+                # bluez умеет не вернуться, и тогда демон тихо стоит годами:
+                # процесс жив, лента в кэше, а попыток подключения ноль
+                await asyncio.wait_for(self._open(), timeout=OPEN_TIMEOUT)
                 backoff = list(RECONNECT_BACKOFF)
                 await self._serve()
             except asyncio.CancelledError:
@@ -137,7 +203,7 @@ class Driver:
             log.info("подключаюсь к %s (попытка %d)", self.dev.mac, attempt + 1)
             client = BleakClient(self.dev.mac, timeout=CONNECT_TIMEOUT)
             try:
-                await client.connect()
+                await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
             except BleakDeviceNotFoundError:
                 log.debug("устройства нет в кэше bluez, сканирую")
                 await self._scan()
@@ -149,22 +215,28 @@ class Driver:
                     # неудачный клиент нельзя оставлять в self._client: _open()
                     # считает что соединение уже есть и выходит, а следующая
                     # итерация снова падает. рвём его явно.
-                    with contextlib.suppress(Exception):
-                        await client.disconnect()
+                    await self._drop(client)
                     continue
                 raise
             except Exception:
-                with contextlib.suppress(Exception):
-                    await client.disconnect()
+                await self._drop(client)
                 raise
             self._client = client
             self.connected = True
             self.last_error = None
             self._ready.set()
+            self._last_write = time.monotonic()   # сброс счётчика простоя
             if self.dev.sync_time:
                 await self._write(P.set_time())
-            with contextlib.suppress(Exception):
-                await client.start_notify(P.READ_UUID, self._on_notify)
+            # start_notify на fff4 у этой ленты всегда валится с GATT Protocol
+            # Error: Unlikely Error, а dbus-вызов при этом умеет не вернуться
+            # вовсе. без таймаута _open() висел вечно: демон жив, лента
+            # «подключена» в кэше, но ни одной попытки переподключения часами.
+            with contextlib.suppress(Exception, asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    client.start_notify(P.READ_UUID, self._on_notify),
+                    timeout=NOTIFY_TIMEOUT,
+                )
             log.info("подключено, mtu=%s", getattr(client, "mtu_size", "?"))
             self._emit()
             return
@@ -288,6 +360,18 @@ class Driver:
         except asyncio.TimeoutError:
             raise BleakError(f"лента не отвечает ({self.last_error or 'нет связи'})")
 
+    async def _drop(self, client) -> None:
+        """рвём клиент, не дав зависнуть.
+
+        disconnect() идёт в тот же dbus, что и connect, и на зависшем bluez
+        тоже умеет не вернуться. в try/except это не спасает: await висит
+        вечно и тянет за собой весь цикл. поэтому таймаут обязателен.
+        """
+        if client is None:
+            return
+        with contextlib.suppress(Exception, asyncio.TimeoutError):
+            await asyncio.wait_for(client.disconnect(), timeout=DROP_TIMEOUT)
+
     def _emit(self) -> None:
         if self.on_change:
             try:
@@ -382,12 +466,12 @@ class Driver:
         return found
 
     async def apply(self, _action: str, **kw: Any) -> dict[str, Any]:
-        """единая точка входа из api. первый позиционный аргумент — команда."""
+        """униная точка входа из api. первый позиционный аргумент — команда."""
         action = _action
         kw.pop("action", None)
         if action == "color" and "r" not in kw:
-            r, g, b = hsv_to_rgb(kw.get("h", 0), kw.get("s", 1.0), kw.get("v", 1.0))
-            kw.update(r=r, g=g, b=b)
+            cr, cg, cb = _parse_color(kw)
+            kw.update(r=cr, g=cg, b=cb)
         table: dict[str, Callable[[], Any]] = {
             "power": lambda: self.set_power(bool(kw["on"])),
             "color": lambda: self.set_color(kw["r"], kw["g"], kw["b"]),

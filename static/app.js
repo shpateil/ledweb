@@ -113,7 +113,11 @@ function paint(action, p) {
 }
 
 /* ── снимок состояния ──────────────────────────────────────────── */
+// метка последнего снимка. нужна клиентскому сторожу ниже и в ingest() выше
+var lastSnapAt = Date.now();
+
 function ingest(snap) {
+  lastSnapAt = Date.now();
   if (!snap) return;
   const wasOff = S.state && !S.state.power;
   S.state = snap;
@@ -124,10 +128,30 @@ function ingest(snap) {
   }
   const dot = $('#dot');
   dot.className = 'dot ' + (snap.last_error ? 'err' : snap.connected ? (snap.power ? 'on' : 'off') : 'err');
+  renderLinkWarn(snap);
   $('#devname').textContent = snap.name || 'лента';
   $('#s-mac').textContent = snap.mac || '';
   $('#effect-now').textContent = snap.effect_name || '—';
   render();
+}
+
+// при обрыве связи панель обязана об этом говорить. раньше висел только
+// индикатор-точка, и демон с connected:false выглядел как живой
+function renderLinkWarn(snap) {
+  const box = $('#link-warn');
+  if (!box) return;
+  const txt = $('#link-warn-text');
+  if (snap.connected) {
+    if (!box.hidden) {
+      box.hidden = true;
+      toast('связь восстановлена');
+    }
+    return;
+  }
+  if (txt) txt.textContent = snap.last_error
+    ? 'лента не на связи: ' + snap.last_error
+    : 'лента не на связи, ждём подключения';
+  box.hidden = false;
 }
 
 let lastSentHex = null;
@@ -512,6 +536,21 @@ function openSheet(open) {
   $('#sheet').hidden = !open;
   $('#scrim').hidden = !open;
 }
+on('#btn-reconnect', 'click', async () => {
+  const b = $('#btn-reconnect');
+  if (b) { b.disabled = true; b.textContent = 'подключаю...'; }
+  try {
+    const snap = await api('/api/reconnect', { method: 'POST' });
+    toast('переподключаюсь');
+    if (snap) ingest(snap);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    // текст вернёт renderLinkWarn, когда придёт свежий снимок состояния
+    setTimeout(() => { if (b) { b.disabled = false; } }, 2500);
+  }
+});
+
 on('#btn-settings', 'click', () => openSheet(true));
 on('#sheet-close', 'click', () => openSheet(false));
 on('#scrim', 'click', () => openSheet(false));
@@ -635,6 +674,21 @@ function connectStream() {
     if (document.hidden) es.close(); else connectStream();
   });
 }
+
+/* страховка на клиенте: если по sse давно не было снимка — спросим api
+   напрямую. иначе панель залипнет с зелёной точкой, когда лента отвалилась,
+   а демон молчит. раньше было ровно это: демон висел в dbus, фронт получал
+   снимок раз в сутки и показывал «всё ок» */
+setInterval(async () => {
+  if (Date.now() - lastSnapAt < 15000) return;
+  try {
+    const snap = await api('/api/state');
+    lastSnapAt = Date.now();
+    ingest(snap);
+  } catch {
+    lastSnapAt = Date.now();   // демон целиком мёртв, sse сам переподключится
+  }
+}, 5000);
 
 /* ── старт ─────────────────────────────────────────────────────── */
 (async function init() {

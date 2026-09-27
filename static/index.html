@@ -14,6 +14,15 @@
 </head>
 <body>
 
+<!-- баннер связи: показывается, когда лента не на связи. раньше был только
+     индикатор-точка, и при обрыве панель выглядела живой, хотя команды
+     не доходили. теперь причина видна сразу. -->
+<div class="link-warn" id="link-warn" hidden>
+  <i data-lucide="unplug"></i>
+  <span id="link-warn-text">лента не на связи, ждём подключения</span>
+  <button class="lnk" id="btn-reconnect">подключить</button>
+</div>
+
 <header class="top">
   <div class="brand">
     <span class="dot" id="dot"></span>

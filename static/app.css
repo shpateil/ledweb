@@ -386,3 +386,28 @@ kbd {
   input[type="range"] { height: 44px; }
   input[type="range"]::-webkit-slider-thumb { width: 22px; height: 22px; margin-top: -10px; }
 }
+
+/* баннер связи. показывается только когда лента не на связи, чтобы панель
+   не выглядела рабочей, когда команды не доходят */
+.link-warn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 16px;
+  background: color-mix(in srgb, #ff5fd9 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #ff5fd9 35%, transparent);
+  color: var(--fg);
+  font-size: 13px;
+}
+.link-warn i { flex: none; }
+.link-warn span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-warn .lnk {
+  flex: none;
+  font: inherit; font-size: 12px;
+  padding: 4px 10px;
+  color: var(--fg);
+  background: rgba(255,255,255,.06);
+  border: 1px solid var(--bd);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.link-warn .lnk:hover:not(:disabled) { background: rgba(255,255,255,.11); }
+.link-warn .lnk:disabled { opacity: .5; cursor: default; }
