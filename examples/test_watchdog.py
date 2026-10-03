@@ -342,6 +342,25 @@ async def main():
     d13._watch.cancel()
     with __import__("contextlib").suppress(asyncio.CancelledError):
         await d13._watch
+
+    # _write рвёт клиента только на своём таймауте. проба ловит любое
+    # исключение, и если клиента не порвать явно он остаётся is_connected=True
+    # — демон с зелёной точкой и нулём попыток переподключения
+    d14 = Fake()
+    d14._client = FakeClient()
+    d14.connected = True
+    d14._ready.set()
+    d14._last_write = time.monotonic() - 9999
+
+    async def weird_write(payload):
+        raise RuntimeError("совсем не BleakError")
+    d14._write = weird_write
+    await real_probe(d14)
+    check("не-BleakError в пробе тоже рвёт клиента", d14._client is None,
+          f"client={d14._client}")
+    check("счётчик в полёте обнулён после необычной ошибки",
+          d14._inflight == 0, f"_inflight={d14._inflight}")
+
     importlib.reload(D)
 
     print(f"\nитог: {ok} ок, {len(bad)} провалов")

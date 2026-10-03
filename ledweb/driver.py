@@ -166,6 +166,11 @@ class Driver:
                 if time.monotonic() - self._last_write < WATCHDOG_PROBE:
                     continue
                 await self._probe()
+                # проба упала — она уже порвала соединение. не продолжаем
+                # крутить сторож на мёртвом клиенте: _serve увидит
+                # is_connected=False и вернётся, фоновый цикл поднимет новое
+                if self._client is None:
+                    return
                 continue
             # команды висят в очереди дольше порога — писать не отвечает
             if time.monotonic() - self._last_write > WATCHDOG_STUCK:
@@ -198,6 +203,11 @@ class Driver:
             self.last_error = "лента не отвечает на запись"
             self._ready.clear()
             self._emit()
+            # рвём клиента в любом случае, даже если он сам по себе ещё
+            # считает себя живым: _write рвёт соединение только на своём
+            # таймауте, а сюда может прийти любое другое исключение. оставить
+            # клиента с is_connected=True значит оставить демон с зелёной
+            # точкой и нулём попыток переподключения
             client, self._client = self._client, None
             if client is not None:
                 with contextlib.suppress(Exception, asyncio.TimeoutError):
