@@ -34,7 +34,11 @@ GATT_WRITE_TIMEOUT = 2.0  # сколько ждём саму запись в л�
                           # ответа может висеть вечно на зависшем bluez, и если
                           # не ограничить — writer встанет колом навсегда
 WATCHDOG_INTERVAL = 20.0   # как часто сторож проверяет связь
-WATCHDOG_IDLE = 120.0      # столько простоя считается нормой, команд не было
+WATCHDOG_PROBE = 900.0     # после столького простоя шлём пробную запись:
+                         # молчание bluez неотличимо от «всё хорошо», и без
+                         # пробы зависший адаптер неделями выглядит живым
+WATCHDOG_IDLE = 120.0      # больше не используется, оставлен как документ
+                         # прежней логики. не опираться на него в коде
 WATCHDOG_STUCK = 30.0      # очередь не двигается дольше этого — связь мертва
 OPEN_TIMEOUT = 45.0     # весь _open() целиком, включая 4 попытки и кики
 DROP_TIMEOUT = 3.0       # disconnect в тот же dbus и тоже умеет не вернуться
@@ -117,6 +121,9 @@ class Driver:
         # дефолт State() и перезаписывать ленту на старте нельзя: пользователь
         # мог держать её на своём режиме со вчерашнего рана
         self._pushed_to_strip = False
+        # питание юзер трогал явно. до этого power в кэше — просто дефолт
+        # False, и реконнект гасил ленту, которую никто не выключал
+        self._power_known = False
         # сколько записей сейчас в полёте. очередь пуста ≠ записи не идут:
         # _serve снимает кадр из очереди ДО записи, поэтому просто «пустая
         # очередь» как признак простоя врёт. сторож смотрит на сумму.
@@ -151,6 +158,14 @@ class Driver:
             # порог 120), и лента на каждом обрыве уходила в свой дефолтный
             # режим с перебором цветов — 1496 раз за неделю в журнале
             if self._queue.empty() and self._inflight == 0:
+                # работы нет. просто continue тут опасен: молчание bluez
+                # неотличимо от «всё хорошо», client.is_connected остаётся
+                # True неопределённо долго, демон показывает connected: true
+                # и не делает ни одной попытки переподключения. ровно то,
+                # против чего написана docstring этого метода
+                if time.monotonic() - self._last_write < WATCHDOG_PROBE:
+                    continue
+                await self._probe()
                 continue
             # команды висят в очереди дольше порога — писать не отвечает
             if time.monotonic() - self._last_write > WATCHDOG_STUCK:
@@ -163,6 +178,32 @@ class Driver:
                 if client is not None:
                     with contextlib.suppress(Exception, asyncio.TimeoutError):
                         await asyncio.wait_for(client.disconnect(), timeout=3.0)
+
+    async def _probe(self) -> None:
+        """дешёвая проверка связи на простое: одна запись и лог.
+
+        шлём set_time — он только часы ленте ставит, ни цвет, ни режим, ни
+        яркость не трогает, так что проба не видна. если и она зависла,
+        рвём соединение, и фоновый цикл поднимет новое. _write сам ловит
+        таймаут и рвёт клиент, нам остаётся привести состояние в порядок.
+        """
+        log.info("простой %.0f с, пробую связь записью", WATCHDOG_PROBE)
+        self._inflight += 1
+        try:
+            await self._write(P.set_time())
+            log.info("проба связи прошла")
+        except Exception as e:                    # noqa: BLE001
+            log.warning("проба связи не прошла (%s), рву соединение", e)
+            self.connected = False
+            self.last_error = "лента не отвечает на запись"
+            self._ready.clear()
+            self._emit()
+            client, self._client = self._client, None
+            if client is not None:
+                with contextlib.suppress(Exception, asyncio.TimeoutError):
+                    await asyncio.wait_for(client.disconnect(), timeout=3.0)
+        finally:
+            self._inflight -= 1
 
     async def stop(self) -> None:
         self._stop.set()
@@ -317,6 +358,10 @@ class Driver:
     async def _teardown(self) -> None:
         self.connected = False
         self._ready.clear()
+        # записи в полёте не переживают разрыв: счётчик обязан вернуться в
+        # ноль, иначе сторож навсегда увидит «есть работа» и вернётся
+        # к рвению простаивающего соединения — к исходному багу
+        self._inflight = 0
         client, self._client = self._client, None
         if client is not None:
             # disconnect() на уже мёртвом клиенте может висеть вечно —
@@ -396,13 +441,30 @@ class Driver:
         """
         if not self._pushed_to_strip:
             return False
-        payloads = [
-            P.power(bool(self.state.power), self.variant),
-            P.effect(int(self.state.effect), self.variant),
-            P.brightness(int(self.state.brightness), self.variant),
-            P.single_color(0, self.variant),
-            P.color(*self.state.color, self.variant),
-        ]
+        # питание шлём только если юзер его явно трогал. State.power по
+        # умолчанию False и никогда не читается с ленты (readback нет), так
+        # что без этого флага реконнект гасил ленту, которую не выключали:
+        # жмём только цвет → _pushed_to_strip взводится, power остаётся
+        # дефолтным False → на обрыве уходит P.power_off
+        if self._power_known:
+            payloads = [P.power(bool(self.state.power), self.variant)]
+        else:
+            payloads = []
+        effect = int(self.state.effect)
+        # цвет идёт только при effect == none. set_color() сам гасит эффект
+        # (кладёт effect=none в state_patch), значит «цвет значит эффект
+        # выключен» — правило этого драйвера. если в кэше эффект не none,
+        # слать цвет значит сбить его в статичный, и лента покажет одно,
+        # а snapshot() — другое
+        if effect == int(P.Effect.none):
+            payloads += [P.single_color(0, self.variant),
+                         P.color(*self.state.color, self.variant)]
+        else:
+            # скорость живёт в памяти ленты, как и режим, её тоже возвращаем
+            payloads += [P.effect(effect, self.variant),
+                         P.effect_speed(int(self.state.effect_speed), self.variant)]
+        if not payloads:
+            return False
         try:
             # весь отрезок считаем одной записью в полёте: пишем напрямую,
             # минуя очередь, иначе посреди серии обрыв не увидят ни
@@ -484,6 +546,7 @@ class Driver:
         await asyncio.wait_for(fut, timeout=WRITE_TIMEOUT)
 
     async def set_power(self, on: bool) -> None:
+        self._power_known = True          # единственный источник правды о питании
         await self._send([P.power(on, self.variant)], {"power": on})
 
     async def set_color(self, r: int, g: int, b: int) -> None:
