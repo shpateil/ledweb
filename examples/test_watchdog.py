@@ -10,6 +10,7 @@ import time
 
 sys.path.insert(0, "%h/ledweb")
 from ledweb import driver as D
+from ledweb import protocol as P
 
 ok = 0
 bad = []
@@ -50,6 +51,7 @@ class Fake(D.Driver):
         self._pending = {}
         self._inflight = 0
         self._pushed_to_strip = False
+        self._power_known = False
         self._ready = asyncio.Event()
         self._client = None
         self.connected = False
@@ -67,6 +69,7 @@ class Fake(D.Driver):
         # настоящий Variant: _replay_state строит по нему кадры
         self.variant = importlib.import_module("ledweb.protocol").VARIANTS["generic"]
     _watchdog = D.Driver._watchdog
+    _probe = D.Driver._probe
     _teardown = D.Driver._teardown
 
 
@@ -152,6 +155,9 @@ async def main():
     d4._inflight = 0
     d4._last_write = time.monotonic() - 9999   # простоя больше любых порогов
     D.WATCHDOG_INTERVAL = 0.05
+    # порог выше простоя: этот тест про «простой не рвёт», пробу тут ждать
+    # не надо. было ровно 9999 против 9999 с — тест стоял на границе и падал
+    D.WATCHDOG_PROBE = 99999.0
     d4._watch = asyncio.create_task(d4._watchdog())
     await asyncio.sleep(0.35)           # 7 интервалов сторожа
     check("простой не рвёт соединение", d4._client is not None and d4.connected,
@@ -225,6 +231,137 @@ async def main():
     check("живая связь: восстановление не рвёт подключение",
           (await d7._replay_state()) is False)
     check("счётчик в полёте обнулён", d7._inflight == 0, f"_inflight={d7._inflight}")
+
+    print("\n── регресс: реплей не гасит ленту ──")
+    # power в кэше — просто дефолт False, его никогда не читают с ленты.
+    # без флага _power_known реконнект отправлял P.power_off ленте, которую
+    # юзер не выключал: жмём только цвет, power остаётся False
+    d8 = Fake()
+    d8._pushed_to_strip = True
+    d8._power_known = False
+    d8.state.power = False
+    d8.written = []
+
+    async def collect(payload):
+        d8.written.append(payload)
+    d8._write = collect
+    await d8._replay_state()
+    check("питание не отправляется без явной команды",
+          all(p != P.power(True, d8.variant) for p in d8.written)
+          and all(p not in (P.power(True, d8.variant), P.power(False, d8.variant))
+                  for p in d8.written),
+          [p.hex() for p in d8.written])
+
+    # жались «включить» — теперь питание подтверждено и его можно вернуть
+    d9 = Fake()
+    d9._pushed_to_strip = True
+    d9._power_known = True
+    d9.state.power = True
+    d9.written = []
+
+    async def collect2(payload):
+        d9.written.append(payload)
+    d9._write = collect2
+    await d9._replay_state()
+    check("подтверждённое питание возвращается",
+          d9.written and d9.written[0] == P.power(True, d9.variant),
+          d9.written[0].hex() if d9.written else "ничего не отправил")
+
+    print("\n── регресс: реплей не затирает эффект ──")
+    # set_color сам гасит эффект, значит цвет и эффект несовместимы.
+    # при effect != none отправка цвета сбивала бы режим в статичный
+    d10 = Fake()
+    d10._pushed_to_strip = True
+    d10._power_known = False
+    d10.state.effect = int(P.Effect.fade_all)
+    d10.state.effect_speed = 80
+    d10.written = []
+
+    async def collect3(payload):
+        d10.written.append(payload)
+    d10._write = collect3
+    await d10._replay_state()
+    check("при активном эффекте цвет не отправляется",
+          P.color(*d10.state.color, d10.variant) not in d10.written,
+          [p.hex() for p in d10.written])
+    check("режим отправляется", P.effect(int(P.Effect.fade_all), d10.variant) in d10.written)
+    check("скорость эффекта отправляется",
+          P.effect_speed(80, d10.variant) in d10.written,
+          "effect_speed терялся — лента откатывалась на дефолт")
+
+    print("\n── регресс: счётчик сбрасывается при разрыве ──")
+    # единственное присваивание 0 было в __init__: любой не-BleakError
+    # оставлял счётчик выше нуля навсегда и сторож возвращался к рвению
+    d11 = Fake()
+    d11._inflight = 3
+    d11._client = FakeClient()
+    await d11._teardown()
+    check("_teardown обнуляет счётчик", d11._inflight == 0, f"_inflight={d11._inflight}")
+
+    print("\n── проба связи на простое ──")
+    # сторож не должен молчать при простое: иначе зависший адаптер неделями
+    # выглядит живым, ровно то против чего написана docstring _watchdog
+    d12 = Fake()
+    d12._client = FakeClient()
+    d12.connected = True
+    d12._ready.set()
+    d12._queue = asyncio.Queue()
+    d12._inflight = 0
+    d12._last_write = time.monotonic() - 9999
+    probes = {"n": 0}
+
+    async def probe_write(payload):
+        probes["n"] += 1
+    d12._write = probe_write
+    real_probe = D.Driver._probe
+    D.WATCHDOG_PROBE = 0.05
+    D.WATCHDOG_INTERVAL = 0.05
+    d12._watch = asyncio.create_task(d12._watchdog())
+    await asyncio.sleep(0.3)
+    check("на простое сторож шлёт пробу", probes["n"] > 0, f"проб={probes['n']}")
+    check("удачная проба не рвёт соединение",
+          d12._client is not None and d12.connected, f"client={d12._client}")
+
+    # проба зависла — соединение обязано упасть
+    d13 = Fake()
+    d13._client = FakeClient()
+    d13.connected = True
+    d13._ready.set()
+    d13._queue = asyncio.Queue()
+    d13._inflight = 0
+    d13._last_write = time.monotonic() - 9999
+
+    async def hung_write(payload):
+        raise D.BleakError("запись в ленту зависла")
+    d13._write = hung_write
+    d13._watch = asyncio.create_task(d13._watchdog())
+    await asyncio.sleep(0.3)
+    check("зависшая проба рвёт соединение", d13._client is None, f"client={d13._client}")
+    check("connected сброшен после зависшей пробы", d13.connected is False)
+    d13._stop.set()
+    d13._watch.cancel()
+    with __import__("contextlib").suppress(asyncio.CancelledError):
+        await d13._watch
+
+    # _write рвёт клиента только на своём таймауте. проба ловит любое
+    # исключение, и если клиента не порвать явно он остаётся is_connected=True
+    # — демон с зелёной точкой и нулём попыток переподключения
+    d14 = Fake()
+    d14._client = FakeClient()
+    d14.connected = True
+    d14._ready.set()
+    d14._last_write = time.monotonic() - 9999
+
+    async def weird_write(payload):
+        raise RuntimeError("совсем не BleakError")
+    d14._write = weird_write
+    await real_probe(d14)
+    check("не-BleakError в пробе тоже рвёт клиента", d14._client is None,
+          f"client={d14._client}")
+    check("счётчик в полёте обнулён после необычной ошибки",
+          d14._inflight == 0, f"_inflight={d14._inflight}")
+
+    importlib.reload(D)
 
     print(f"\nитог: {ok} ок, {len(bad)} провалов")
     if bad:
