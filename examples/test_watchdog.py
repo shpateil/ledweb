@@ -4,6 +4,7 @@
 виснут. и что _open() не может висеть вечно.
 """
 import asyncio
+import importlib
 import sys
 import time
 
@@ -47,6 +48,8 @@ class Fake(D.Driver):
         self._watch = None
         self._queue = asyncio.Queue()
         self._pending = {}
+        self._inflight = 0
+        self._pushed_to_strip = False
         self._ready = asyncio.Event()
         self._client = None
         self.connected = False
@@ -54,11 +57,15 @@ class Fake(D.Driver):
         self._last_write = time.monotonic()
         self._notify = []
         self._emit_called = 0
-        self.state = type("S", (), {"updated_at": 0})()
+        # настоящий State: _replay_state читает power/color/brightness/effect
+        self.state = D.State(power=True, color=(255, 255, 255), brightness=100,
+                             effect=int(importlib.import_module(
+                                 "ledweb.protocol").Effect.fade_all))
         self.on_change = None          # вызывается из _emit(), в фейке нужен
         self.dev = type("Dev", (), {"mac": "AA:BB:CC:DD:EE:FF", "auto_connect": True,
                                     "sync_time": False})()
-        self.variant = None
+        # настоящий Variant: _replay_state строит по нему кадры
+        self.variant = importlib.import_module("ledweb.protocol").VARIANTS["generic"]
     _watchdog = D.Driver._watchdog
     _teardown = D.Driver._teardown
 
@@ -125,13 +132,99 @@ async def main():
     except Exception as e:
         check("_open вернулся, не завис", False, f"{type(e).__name__}: {e}")
 
-    import importlib
+
     real = importlib.reload(D)   # выше константы менялись ради скорости
     print("\n── константы на месте ──")
     for name, val in [("GATT_WRITE_TIMEOUT", 2.0), ("NOTIFY_TIMEOUT", 3.0),
                       ("OPEN_TIMEOUT", 45.0), ("WATCHDOG_INTERVAL", 20.0),
                       ("WATCHDOG_STUCK", 30.0), ("WATCHDOG_IDLE", 120.0)]:
         check(f"{name} = {val}", getattr(real, name, None) == val, getattr(real, name, None))
+
+    print("\n── регресс: простой не рвёт соединение ──")
+    # ровно тот баг, из-за которого лента каждые ~140 с уходила в свой
+    # дефолтный режим: пустая очередь + простой больше WATCHDOG_IDLE
+    # проскакивали первый continue, и следующий if проверял простой > STUCK
+    d4 = Fake()
+    d4._client = FakeClient()
+    d4.connected = True
+    d4._ready.set()
+    d4._queue = asyncio.Queue()        # пусто — записи нет и не было
+    d4._inflight = 0
+    d4._last_write = time.monotonic() - 9999   # простоя больше любых порогов
+    D.WATCHDOG_INTERVAL = 0.05
+    d4._watch = asyncio.create_task(d4._watchdog())
+    await asyncio.sleep(0.35)           # 7 интервалов сторожа
+    check("простой не рвёт соединение", d4._client is not None and d4.connected,
+          f"client={d4._client}")
+    d4._stop.set()
+    d4._watch.cancel()
+    with __import__("contextlib").suppress(asyncio.CancelledError):
+        await d4._watch
+    importlib.reload(D)
+
+    print("\n── регресс: счётчик в полёте не залипает ──")
+    # декремент стоял в двух точках и только на ветке без исключения. любое
+    # другое исключение из _write оставляло _inflight выше нуля навсегда,
+    # сторож решал что запись зависла, и демон возвращался к рвению живого
+    # соединения — то есть к исходному багу
+    class FakeServe(Fake):
+        _serve = D.Driver._serve
+        _write = D.Driver._write
+        _teardown = D.Driver._teardown
+
+    d5 = FakeServe()
+    d5._client = None
+    d5._inflight = 0
+    d5._queue = asyncio.Queue()
+    d5._pending = {}
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    d5._pending[fut] = 1
+    d5._queue.put_nowait((fut, b"\x7e\x00"))
+    calls = {"n": 0}
+
+    async def exploding_write(payload):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("не BleakError")     # счётчик обязан упасть
+        if not fut.done():
+            fut.set_result(True)
+    d5._write = exploding_write
+    with __import__("contextlib").suppress(RuntimeError):
+        await d5._serve()
+    check("RuntimeError из _write не оставил счётчик в полёте",
+          d5._inflight == 0, f"_inflight={d5._inflight}")
+
+    print("\n── регресс: восстановление роняет связь, а не врёт ──")
+    # если связь мертва, _open() обязан получить исключение, а не вернуться
+    # с мёртвым клиентом: иначе он уходит в _serve() и крутится в цикле
+    d6 = Fake()
+    d6._pushed_to_strip = True
+    d6.state.color = (1, 2, 3)
+    d6._client = None
+
+    async def dead_write(payload):
+        raise D.BleakError("запись зависла, переподключаюсь")
+    d6._write = dead_write
+    raised = False
+    try:
+        await d6._replay_state()
+    except D.BleakError:
+        raised = True
+    check("мёртвая связь поднимает ошибку в _open", raised)
+    check("счётчик в полёте обнулён после ошибки", d6._inflight == 0,
+          f"_inflight={d6._inflight}")
+
+    # связь жива, кадр не ушёл — подключение не рвём
+    d7 = Fake()
+    d7._pushed_to_strip = True
+    d7._client = FakeClient()
+
+    async def flaky_write(payload):
+        raise D.BleakError("как один кадр не ушёл")
+    d7._write = flaky_write
+    check("живая связь: восстановление не рвёт подключение",
+          (await d7._replay_state()) is False)
+    check("счётчик в полёте обнулён", d7._inflight == 0, f"_inflight={d7._inflight}")
 
     print(f"\nитог: {ok} ок, {len(bad)} провалов")
     if bad:

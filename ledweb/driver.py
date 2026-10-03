@@ -113,6 +113,14 @@ class Driver:
         self._pending: dict[asyncio.Future, int] = {}   # future → сколько кадров осталось
         self._notify: list[bytes] = []
         self._ready = asyncio.Event()      # соединение живое, вода по очереди идёт
+        # состояние хотя бы раз отправлялось ленте. до этого демон держит
+        # дефолт State() и перезаписывать ленту на старте нельзя: пользователь
+        # мог держать её на своём режиме со вчерашнего рана
+        self._pushed_to_strip = False
+        # сколько записей сейчас в полёте. очередь пуста ≠ записи не идут:
+        # _serve снимает кадр из очереди ДО записи, поэтому просто «пустая
+        # очередь» как признак простоя врёт. сторож смотрит на сумму.
+        self._inflight = 0
 
     # ── жизненный цикл ──────────────────────────────────────────────
     async def start(self) -> None:
@@ -133,9 +141,18 @@ class Driver:
                 return
             if self._client is None or not self._client.is_connected:
                 continue                      # этим занимается _run
-            if self._queue.empty() and time.monotonic() - self._last_write < WATCHDOG_IDLE:
-                continue                      # просто давно не было команд
-            # команды висят в очереди дольше порога — пишем не отвечает
+            # зависание возможно только когда в очереди что-то лежит: если
+            # очередь пуста, писать некому и зависнуть нечему. WATCHDOG_IDLE
+            # тут больше не участвует — раньше стояло «пустая очередь И простой
+            # меньше WATCHDOG_IDLE», и при простое больше 120 с оба условия
+            # проходили насквозь: следующий if проверял простой > 30 с, что
+            # для простоя истинно всегда. демон рвал живое, идеально
+            # простаивающее соединение каждые ~140 с (WATCHDOG_INTERVAL 20 +
+            # порог 120), и лента на каждом обрыве уходила в свой дефолтный
+            # режим с перебором цветов — 1496 раз за неделю в журнале
+            if self._queue.empty() and self._inflight == 0:
+                continue
+            # команды висят в очереди дольше порога — писать не отвечает
             if time.monotonic() - self._last_write > WATCHDOG_STUCK:
                 log.warning("завис %s с при непустой очереди, рву соединение", WATCHDOG_STUCK)
                 self.connected = False
@@ -225,10 +242,17 @@ class Driver:
             self._last_write = time.monotonic()   # сброс счётчика простоя
             if self.dev.sync_time:
                 await self._write(P.set_time())
+            # после обрыва лента возвращается в свой дефолтный режим с
+            # перебором цветов: состояние живёт в её памяти и наш обрыв ей
+            # ничего не сообщает. раньше здесь шёл только set_time, и каждый
+            # реконнект оставлял ленту мигать случайным цветом, пока
+            # пользователь не дёрнет панель. шлём своё состояние обратно
+            if await self._replay_state():
+                log.info("состояние вернул ленте: %s", self._state_cmd())
             # start_notify на fff4 у этой ленты всегда валится с GATT Protocol
             # Error: Unlikely Error, а dbus-вызов при этом умеет не вернуться
             # вовсе. без таймаута _open() висел вечно: демон жив, лента
-            # «подключена» в кэше, но ни одной попытки переподключения часами.
+            # «подключена» в кэше, но ни одной попытки подпереподключения часами.
             with contextlib.suppress(Exception, asyncio.TimeoutError):
                 await asyncio.wait_for(
                     client.start_notify(P.READ_UUID, self._on_notify),
@@ -259,6 +283,7 @@ class Driver:
             while not self._queue.empty():
                 items.append(self._queue.get_nowait())
             for fut, payload in items:
+                self._inflight += 1
                 try:
                     await self._write(payload)
                 except BleakError as e:
@@ -268,6 +293,14 @@ class Driver:
                     self.connected = False
                     self._ready.clear()
                     return
+                finally:
+                    # обязательно в finally, а не двумя точками: любое
+                    # исключение из _write (не только BleakError) иначе
+                    # оставит счётчик выше нуля навсегда, сторож решит что
+                    # запись зависла, и демон вернётся к рвению живого
+                    # соединения каждые ~140 с — ровно тот баг, который тут
+                    # и чинится
+                    self._inflight -= 1
                 if fut is None:
                     continue
                 # резолвим future только когда записаны все кадры команды
@@ -342,6 +375,57 @@ class Driver:
         self._last_write = time.monotonic()
         self.last_command_ms = (time.perf_counter() - t0) * 1000
 
+    def _state_cmd(self) -> str:
+        """человеческое имя текущего состояния — только для лога."""
+        r, g, b = self.state.color
+        return (f"power={self.state.power} color=#{r:02x}{g:02x}{b:02x} "
+                f"brightness={self.state.brightness} effect={self.state.effect}")
+
+    async def _replay_state(self) -> bool:
+        """вернуть ленте то, что она забыла при обрыве.
+
+        состояние живёт в памяти ленты, а не в демоне: после обрыва она
+        остаётся в своём дефолтном режиме с перебором цветов. шлём питание,
+        режим, яркость и цвет, чтобы лента выглядела как до обрыва. порядок
+        тот же, что у обычных команд: режим и питание, потом яркость, потом
+        цвет — иначе цвет гаснет на неверной яркости.
+
+        пока состояние ни разу не уходило в ленту (свежий старт демона), молчим:
+        наш State() тогда просто дефолт, и слать его — значит затереть режим,
+        который юзер выставил вчера.
+        """
+        if not self._pushed_to_strip:
+            return False
+        payloads = [
+            P.power(bool(self.state.power), self.variant),
+            P.effect(int(self.state.effect), self.variant),
+            P.brightness(int(self.state.brightness), self.variant),
+            P.single_color(0, self.variant),
+            P.color(*self.state.color, self.variant),
+        ]
+        try:
+            # весь отрезок считаем одной записью в полёте: пишем напрямую,
+            # минуя очередь, иначе посреди серии обрыв не увидят ни
+            # _teardown(), ни сторож
+            self._inflight += 1
+            for p in payloads:
+                await self._write(p)
+            return True
+        except Exception as e:                    # noqa: BLE001
+            log.warning("состояние вернуть не удалось: %s", e)
+            # если при этом ещё и соединение развалилось — не даём _open()
+            # рапортовать об успехе и уйти в _serve() с мёртвым клиентом:
+            # тот там сразу падает и крутится в цикле. пусть _run увидит
+            # исключение и поднимет соединение заново, состояние вернётся
+            # на следующей попытке
+            if self._client is None or not self._client.is_connected:
+                raise BleakError("состояние вернуть не удалось, соединение мертво") from e
+            # соединение живо, просто кадр не ушёл: лента покажет дефолт,
+            # пользователь переключит сам. подключение не рвём
+            return False
+        finally:
+            self._inflight -= 1
+
     def _on_notify(self, _sender, data: bytearray) -> None:
         self._notify.append(bytes(data))
         del self._notify[:-32]
@@ -383,6 +467,9 @@ class Driver:
             for k, val in state_patch.items():
                 setattr(self.state, k, val)
             self.state.updated_at = time.time()
+            # команда с меняющим состоянием — значит картинка в ленте теперь
+            # наша, и её надо будет вернуть после следующего обрыва
+            self._pushed_to_strip = True
             self._emit()
         await self._await_ready()
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
