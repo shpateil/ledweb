@@ -8,7 +8,7 @@ import importlib
 import sys
 import time
 
-sys.path.insert(0, "/home/shpateil/ledweb")
+sys.path.insert(0, "%h/ledweb")
 from ledweb import driver as D
 from ledweb import protocol as P
 
