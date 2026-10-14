@@ -20,6 +20,9 @@ class Fake:
     def __init__(self):
         self._queue = asyncio.Queue()
         self._pending = {}
+        # _serve считает записи в полёте, сторож смотрит на этот счётчик.
+        # без него реальный _serve падает на первом же кадре с AttributeError
+        self._inflight = 0
         self._ready = asyncio.Event()
         self._ready.set()
         self._stop = asyncio.Event()
