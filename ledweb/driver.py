@@ -597,14 +597,19 @@ class Driver:
     async def scan(self, timeout: float = 5.0) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         items = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        # discover(return_adv=True) отдаёт словарь «адрес → (устройство, реклама)».
+        # итерация по нему проходила по строкам-адресам, name у строки пустой,
+        # и /api/scan всегда отвечал «ничего не нашлось» при живых лентах в эфире
+        if isinstance(items, dict):
+            items = list(items.values())
         for item in items:
-            dev = item[0] if isinstance(item, tuple) else item
+            dev, adv = item if isinstance(item, tuple) else (item, None)
             name = (getattr(dev, "name", "") or "")
             if any(k in name.upper() for k in ("ELK", "BLEDOM", "MELK", "STRIP")):
                 found.append({
                     "address": getattr(dev, "address", "?"),
                     "name": name,
-                    "rssi": getattr(item[1], "rssi", None) if isinstance(item, tuple) else None,
+                    "rssi": getattr(adv, "rssi", None),
                 })
         return found
 
