@@ -425,7 +425,7 @@ class Driver:
         except asyncio.TimeoutError as e:
             self.connected = False
             self._ready.clear()
-            log.warning("запись в ленту зависла на %.1f с, рву соединение", WRITE_TIMEOUT)
+            log.warning("запись в ленту зависла на %.1f с, рву соединение", GATT_WRITE_TIMEOUT)
             raise BleakError("запись в ленту зависла, переподключаюсь") from e
         self._last_write = time.monotonic()
         self.last_command_ms = (time.perf_counter() - t0) * 1000
