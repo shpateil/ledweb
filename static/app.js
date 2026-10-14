@@ -622,8 +622,14 @@ function refreshIcons() {
 }
 
 /* ── sse ───────────────────────────────────────────────────────── */
+// соединение одно на вкладку. раньше connectStream при каждом вызове вешал
+// ещё один visibilitychange-листенер: show → connectStream() × N листенеров →
+// N новых EventSource, и за пару переключений вкладки их становилось десятки
+let sse = null;
 function connectStream() {
+  if (sse) { sse.close(); sse = null; }
   const es = new EventSource('/api/stream');
+  sse = es;
   es.addEventListener('state', ev => { try { ingest(JSON.parse(ev.data)); } catch {} });
   es.addEventListener('fx', () => refreshMeta());
   es.addEventListener('timer', ev => {
@@ -643,11 +649,19 @@ function connectStream() {
       }
     } catch {}
   });
-  es.onerror = () => { es.close(); setTimeout(connectStream, 2500); };
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) es.close(); else connectStream();
-  });
+  es.onerror = () => {
+    es.close();
+    if (sse === es) sse = null;
+    setTimeout(connectStream, 2500);
+  };
 }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (sse) { sse.close(); sse = null; }
+  } else {
+    connectStream();
+  }
+});
 
 /* страховка на клиенте: если по sse давно не было снимка — спросим api
    напрямую. иначе панель залипнет с зелёной точкой, когда лента отвалилась,
