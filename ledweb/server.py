@@ -569,8 +569,12 @@ class Server:
                 except asyncio.TimeoutError:
                     payload = ": ping\n\n"
                 writer.write(payload.encode() if isinstance(payload, str) else payload)
-                await writer.drain()
-        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                # клиент может пропасть без RST (мобильная сеть, сон телефона):
+                # drain без таймаута встанет навсегда, и соединение утекёт
+                # вместе со своей очередью подписчика
+                await asyncio.wait_for(writer.drain(), timeout=30)
+        except (ConnectionResetError, BrokenPipeError, asyncio.TimeoutError,
+                asyncio.CancelledError):
             pass
         finally:
             self.sse.unsubscribe(q)
