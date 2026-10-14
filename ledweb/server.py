@@ -502,7 +502,10 @@ class Server:
         if rel == "static" or rel.startswith("static/"):
             rel = rel[len("static"):].lstrip("/")
         full = os.path.normpath(os.path.join(STATIC_DIR, rel))
-        if not full.startswith(STATIC_DIR) or not os.path.isfile(full):
+        # сравнение с os.sep, а не голым startswith: иначе прошёл бы путь к
+        # соседнему каталогу вроде static-evil, чьё имя начинается так же
+        if not (full == STATIC_DIR or full.startswith(STATIC_DIR + os.sep)) \
+                or not os.path.isfile(full):
             full = os.path.join(STATIC_DIR, "index.html")
             if not os.path.isfile(full):
                 return jsonr({"error": "нет статики"}, 404)
