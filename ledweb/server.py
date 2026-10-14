@@ -375,7 +375,13 @@ class Server:
 
         @r("POST", "/api/settings")
         async def _set_settings(_q, rq):
-            self.store.settings.update(rq.json())
+            d = rq.json()
+            # вариант проверяем сразу: Driver читает его как P.VARIANTS[variant],
+            # незнакомое значение в settings.json валило демон с KeyError при
+            # следующем старте, и панель не поднималась вовсе
+            if "variant" in d and d["variant"] not in P.VARIANTS:
+                return jsonr({"error": f"нет такого варианта: {d['variant']}"}, 400)
+            self.store.settings.update(d)
             self._save_settings()
             return jsonr(self.store.settings)
 
