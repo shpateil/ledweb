@@ -492,7 +492,12 @@ on('#t-off', 'click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 
+// один активный таймер отсчёта. sse шлёт timer-событие каждую секунду и
+// раньше каждое событие запускало новую цепочку setTimeout(tick) поверх
+// старых: через минуту работающего таймера их крутилось несколько десятков
+let tickT = null;
 function tick() {
+  clearTimeout(tickT);
   if (!S.timer) { $('#t-left').textContent = ''; return; }
   const left = S.timer - Date.now();
   if (left <= 0) {
@@ -503,7 +508,7 @@ function tick() {
   }
   const m = Math.floor(left / 60000), s = Math.floor((left % 60000) / 1000);
   $('#t-left').textContent = `осталось ${m}:${String(s).padStart(2, '0')}`;
-  setTimeout(tick, 1000);
+  tickT = setTimeout(tick, 1000);
 }
 
 /* ── настройки ─────────────────────────────────────────────────── */
