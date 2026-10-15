@@ -46,8 +46,17 @@ NOTIFY_TIMEOUT = 3.0     # подписка на fff4. лента её не по
                          # не возвращает ответ вовсе, а без таймаута весь
                          # цикл подключения зависал навсегда
 READY_TIMEOUT = 14.0    # сколько ждём, пока фоновый поток поднимет соединение
-RECONNECT_BACKOFF = (0.4, 0.8, 1.6, 3.0, 5.0, 8.0)
+RECONNECT_BACKOFF = (0.4, 0.8, 1.6, 3.0, 5.0, 8.0, 15.0, 30.0)
 IDLE_POLL = 0.5         # как часто проверять, что соединение ещё живо
+CONNECT_STABILIZE = 2.0  # пауза после чужого успешного коннекта: сразу за ним
+                         # новый connect на том же адаптере валил живую ленту
+
+# один ble-адаптер — один connect за раз. две ленты = два драйвера в одном
+# процессе, и без этого замка их попытки подключения шли параллельно:
+# discovery второго валил живое соединение первого (failed to discover
+# services), оно начинало реконнект, валило второй — круговой реконнект,
+# в котором любая команда юзера попадала в момент смерти соединения
+_CONNECT_LOCK = asyncio.Lock()
 
 
 @dataclass
@@ -128,6 +137,18 @@ class Driver:
         # _serve снимает кадр из очереди ДО записи, поэтому просто «пустая
         # очередь» как признак простоя врёт. сторож смотрит на сумму.
         self._inflight = 0
+        # реестр живых драйверов: нужен чтобы знать, есть ли на адаптере
+        # другое активное соединение (см. _open)
+        Driver._instances.append(self)
+
+    _instances: list["Driver"] = []
+
+    def _other_connected(self) -> bool:
+        """другой драйвер сейчас держит соединение на том же адаптере."""
+        return any(
+            d is not self and d._client is not None and d._client.is_connected
+            for d in Driver._instances
+        )
 
     # ── жизненный цикл ──────────────────────────────────────────────
     async def start(self) -> None:
@@ -247,7 +268,10 @@ class Driver:
                 self.last_error = f"{type(e).__name__}: {e}"
                 log.info("ble: %s", self.last_error)
                 await self._teardown()
-                await asyncio.sleep(backoff.pop(0) if len(backoff) > 1 else 8.0)
+                # после исчерпания лестницы — 30 с, а не 8: лента, которой
+                # нет в эфире (вторая в другой комнате/мёртвая), не должна
+                # долбить адаптер каждые 15 с и ронять живую соседку
+                await asyncio.sleep(backoff.pop(0) if len(backoff) > 1 else 30.0)
             else:
                 # _serve() вернулся штатно = соединение отвалилось само. если
                 # не вызвать teardown и не поспать, цикл превращается в горячий
@@ -265,53 +289,62 @@ class Driver:
                 return
             if attempt:
                 await self._kick()
-            log.info("подключаюсь к %s (попытка %d)", self.dev.mac, attempt + 1)
-            client = BleakClient(self.dev.mac, timeout=CONNECT_TIMEOUT)
-            try:
-                await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
-            except BleakDeviceNotFoundError:
-                log.debug("устройства нет в кэше bluez, сканирую")
-                await self._scan()
-                continue
-            except BleakDBusError as e:
-                msg = str(e)
-                if "InProgress" in msg or "In Progress" in msg:
-                    log.debug("bluez занят предыдущей попыткой, сбрасываю")
-                    # неудачный клиент нельзя оставлять в self._client: _open()
-                    # считает что соединение уже есть и выходит, а следующая
-                    # итерация снова падает. рвём его явно.
-                    await self._drop(client)
+            # весь connect+discovery под замком: две ленты = два драйвера, их
+            # параллельные попытки подключения на одном адаптере валили друг
+            # друга (discovery второго ронял живое соединение первого),
+            # и демо крутилось в круговом реконнекте
+            async with _CONNECT_LOCK:
+                # чужое живое соединение: даём его коннекту устаканиться, иначе
+                # сразу за чужим connect наш discovery валит чужую ленту
+                if self._other_connected():
+                    await asyncio.sleep(CONNECT_STABILIZE)
+                log.info("подключаюсь к %s (попытка %d)", self.dev.mac, attempt + 1)
+                client = BleakClient(self.dev.mac, timeout=CONNECT_TIMEOUT)
+                try:
+                    await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
+                except BleakDeviceNotFoundError:
+                    log.debug("устройства нет в кэше bluez, сканирую")
+                    await self._scan()
                     continue
-                raise
-            except Exception:
-                await self._drop(client)
-                raise
-            self._client = client
-            self.connected = True
-            self.last_error = None
-            self._ready.set()
-            self._last_write = time.monotonic()   # сброс счётчика простоя
-            if self.dev.sync_time:
-                await self._write(P.set_time())
-            # после обрыва лента возвращается в свой дефолтный режим с
-            # перебором цветов: состояние живёт в её памяти и наш обрыв ей
-            # ничего не сообщает. раньше здесь шёл только set_time, и каждый
-            # реконнект оставлял ленту мигать случайным цветом, пока
-            # пользователь не дёрнет панель. шлём своё состояние обратно
-            if await self._replay_state():
-                log.info("состояние вернул ленте: %s", self._state_cmd())
-            # start_notify на fff4 у этой ленты всегда валится с GATT Protocol
-            # Error: Unlikely Error, а dbus-вызов при этом умеет не вернуться
-            # вовсе. без таймаута _open() висел вечно: демон жив, лента
-            # «подключена» в кэше, но ни одной попытки подпереподключения часами.
-            with contextlib.suppress(Exception, asyncio.TimeoutError):
-                await asyncio.wait_for(
-                    client.start_notify(P.READ_UUID, self._on_notify),
-                    timeout=NOTIFY_TIMEOUT,
-                )
-            log.info("подключено, mtu=%s", getattr(client, "mtu_size", "?"))
-            self._emit()
-            return
+                except BleakDBusError as e:
+                    msg = str(e)
+                    if "InProgress" in msg or "In Progress" in msg:
+                        log.debug("bluez занят предыдущей попыткой, сбрасываю")
+                        # неудачный клиент нельзя оставлять в self._client: _open()
+                        # считает что соединение уже есть и выходит, а следующая
+                        # итерация снова падает. рвём его явно.
+                        await self._drop(client)
+                        continue
+                    raise
+                except Exception:
+                    await self._drop(client)
+                    raise
+                self._client = client
+                self.connected = True
+                self.last_error = None
+                self._ready.set()
+                self._last_write = time.monotonic()   # сброс счётчика простоя
+                if self.dev.sync_time:
+                    await self._write(P.set_time())
+                # после обрыва лента возвращается в свой дефолтный режим с
+                # перебором цветов: состояние живёт в её памяти и наш обрыв ей
+                # ничего не сообщает. раньше здесь шёл только set_time, и каждый
+                # реконнект оставлял ленту мигать случайным цветом, пока
+                # пользователь не дёрнет панель. шлём своё состояние обратно
+                if await self._replay_state():
+                    log.info("состояние вернул ленте: %s", self._state_cmd())
+                # start_notify на fff4 у этой ленты всегда валится с GATT Protocol
+                # Error: Unlikely Error, а dbus-вызов при этом умеет не вернуться
+                # вовсе. без таймаута _open() висел вечно: демон жив, лента
+                # «подключена» в кэше, но ни одной попытки подпереподключения часами.
+                with contextlib.suppress(Exception, asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        client.start_notify(P.READ_UUID, self._on_notify),
+                        timeout=NOTIFY_TIMEOUT,
+                    )
+                log.info("подключено, mtu=%s", getattr(client, "mtu_size", "?"))
+                self._emit()
+                return
         raise BleakError("не удалось подключиться после 4 попыток")
 
     async def _serve(self) -> None:
