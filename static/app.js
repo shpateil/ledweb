@@ -28,7 +28,9 @@ const ACCENTS = ['#3cec80', '#ff2e9a', '#ff5fd0', '#5c9dff', '#f5a524', '#f2f2f4
 
 const S = {
   h: 0, s: 1, v: 1,          // hsv — источник правды для цвета
-  state: null,              // последний снимок с сервера
+  state: null,              // последний снимок активного выбора
+  states: {},               // снимки по индексам лент: {0: snap, 1: snap}
+  strip: localStorage.getItem('ledweb.strip') || 'both',  // 0 | 1 | 'both'
   meta: null,
   palette: 'material',
   days: 0x7f,
@@ -91,13 +93,14 @@ async function api(path, opts = {}) {
 
 let sendT = null;
 function apply(action, payload, { quiet = false } = {}) {
-  // оптимистично рисуем мгновенно, отправляем с дебаунсом
+  // оптимистично рисуем мгновенно, отправляем с дебаунсом. strip — текущий
+  // выбор ленты: 0/1 конкретная, both — демон разошлёт в обе сам
   paint(action, payload);
   clearTimeout(sendT);
   sendT = setTimeout(async () => {
     try {
-      const snap = await api('/api/apply', { method: 'POST', body: { action, ...payload } });
-      ingest(snap);
+      const snap = await api('/api/apply', { method: 'POST', body: { action, strip: S.strip, ...payload } });
+      ingestAny(snap);
       if (!quiet) $('#latency').textContent = snap.last_command_ms != null ? `${snap.last_command_ms} мс` : '';
     } catch (e) {
       toast(e.message, true);
@@ -116,6 +119,25 @@ function paint(action, p) {
 // метка последнего снимка. нужна клиентскому сторожу ниже и в ingest() выше
 var lastSnapAt = Date.now();
 
+// активный снимок: для both — первая лента (её цвет/яркость и рисуем)
+function activeSnap() {
+  if (S.strip === 'both') return S.states[0] || S.states[1] || null;
+  return S.states[+S.strip] || null;
+}
+
+// ответ сервера бывает одиночным снимком или списком — приводим к одному виду
+function ingestAny(x) {
+  if (Array.isArray(x)) x.forEach(s => { if (s && typeof s === 'object') { S.states[s.strip ?? 0] = s; } });
+  else if (x && typeof x === 'object') {
+    if (x.strip != null) S.states[x.strip] = x;
+    else S.states[S.strip === 'both' ? 0 : +S.strip] = x;
+  }
+  lastSnapAt = Date.now();
+  const cur = activeSnap();
+  if (cur) ingest(cur);
+  renderStripSwitch();
+}
+
 function ingest(snap) {
   lastSnapAt = Date.now();
   if (!snap) return;
@@ -126,32 +148,91 @@ function ingest(snap) {
     const hsv = rgb2hsv(r, g, b);
     S.h = hsv.h; S.s = hsv.s; S.v = Math.max(hsv.v, .02);
   }
-  const dot = $('#dot');
-  dot.className = 'dot ' + (snap.last_error ? 'err' : snap.connected ? (snap.power ? 'on' : 'off') : 'err');
-  renderLinkWarn(snap);
-  $('#devname').textContent = snap.name || 'лента';
-  $('#s-mac').textContent = snap.mac || '';
+  $('#devname').textContent = S.strip === 'both' ? 'обе ленты' : (snap.label || snap.name || 'лента');
   $('#effect-now').textContent = snap.effect_name || '—';
   render();
 }
 
-// при обрыве связи панель обязана об этом говорить. раньше висел только
-// индикатор-точка, и демон с connected:false выглядел как живой
-function renderLinkWarn(snap) {
+// связь по активному выбору: одна точка в бренде + баннер, если хоть одна
+// из выбранных лент отвалилась. раньше был только индикатор-точка, и демон
+// с connected:false выглядел как живой
+function linkStatus() {
+  const idxs = S.strip === 'both' ? Object.keys(S.states).map(Number).sort() : [+S.strip];
+  const bad = idxs.filter(i => S.states[i] && !S.states[i].connected);
+  const err = idxs.map(i => S.states[i]?.last_error).find(Boolean) || null;
+  return { ok: !bad.length, bad, err };
+}
+
+function renderLinkWarn() {
   const box = $('#link-warn');
   if (!box) return;
   const txt = $('#link-warn-text');
-  if (snap.connected) {
+  const st = linkStatus();
+  if (st.ok) {
     if (!box.hidden) {
       box.hidden = true;
       toast('связь восстановлена');
     }
     return;
   }
-  if (txt) txt.textContent = snap.last_error
-    ? 'лента не на связи: ' + snap.last_error
-    : 'лента не на связи, ждём подключения';
+  const names = (S.meta?.strips || []).map(s => s.name);
+  const who = st.bad.map(i => names[i] || `лента ${i + 1}`).join(' и ');
+  if (txt) txt.textContent = st.err
+    ? `${who} не на связи: ${st.err}`
+    : `${who} не на связи, ждём подключения`;
   box.hidden = false;
+}
+
+// точки связи лент в заголовке. main-dot отражает активный выбор целиком
+function stripDotColor(i) {
+  const s = S.states[i];
+  if (!s) return 'var(--muted-fg, #666)';
+  return s.connected ? (s.last_error ? '#f5a524' : 'var(--ac)') : '#f54242';
+}
+
+function renderStripSwitch() {
+  const box = $('#strip-switch');
+  if (!box) return;
+  const strips = S.meta?.strips || [];
+  if (strips.length < 2) { box.hidden = true; return; }   // одна лента — переключатель не нужен
+  box.hidden = false;
+  if (box.children.length !== strips.length + 1) {
+    box.innerHTML = '';
+    strips.forEach(s => {
+      const b = document.createElement('button');
+      b.className = 'tab';
+      b.dataset.strip = s.index;
+      b.addEventListener('click', () => pickStrip(String(s.index)));
+      box.appendChild(b);
+    });
+    const b = document.createElement('button');
+    b.className = 'tab';
+    b.dataset.strip = 'both';
+    b.textContent = 'обе';
+    b.addEventListener('click', () => pickStrip('both'));
+    box.appendChild(b);
+  }
+  const btns = $$('.tab', box);
+  strips.forEach((s, k) => {
+    const el = btns[k];
+    el.title = s.mac || '';
+    el.innerHTML = `<span class="strip-dot" style="background:${stripDotColor(s.index)}"></span>${esc(s.name)}`;
+  });
+  btns.forEach(el => el.classList.toggle('on', el.dataset.strip === String(S.strip)));
+  const dot = $('#dot');
+  const st = linkStatus();
+  if (S.state) {
+    dot.className = 'dot ' + (st.ok ? (S.state.power ? 'on' : 'off') : 'err');
+  }
+  renderLinkWarn();
+}
+
+function pickStrip(v) {
+  S.strip = v;
+  localStorage.setItem('ledweb.strip', v);
+  const cur = activeSnap();
+  if (cur) ingest(cur);
+  renderStripSwitch();
 }
 
 let lastSentHex = null;
@@ -439,7 +520,7 @@ function renderFx() {
           .catch(e => toast(e.message, true));
         return;
       }
-      api('/api/fx', { method: 'POST', body: { key: f.key, speed } })
+      api('/api/fx', { method: 'POST', body: { key: f.key, speed, strip: S.strip } })
         .then(() => { toast(`${f.name} запущен`); refreshMeta(); })
         .catch(e => toast(e.message, true));
     });
@@ -464,7 +545,7 @@ on('#fx-speed', 'change', async (e) => {
   if (!s?.running) return;
   // скорость у движка задаётся при старте, поэтому перезапускаем эффект
   const key = s.name;
-  await api('/api/fx', { method: 'POST', body: { key, speed: e.target.value / 100 } })
+  await api('/api/fx', { method: 'POST', body: { key, speed: e.target.value / 100, strip: S.strip } })
     .then(() => refreshMeta())
     .catch(err => toast(err.message, true));
 });
@@ -520,9 +601,9 @@ on('#btn-reconnect', 'click', async () => {
   const b = $('#btn-reconnect');
   if (b) { b.disabled = true; b.textContent = 'подключаю...'; }
   try {
-    const snap = await api('/api/reconnect', { method: 'POST' });
+    const snap = await api('/api/reconnect', { method: 'POST', body: { strip: S.strip } });
     toast('переподключаюсь');
-    if (snap) ingest(snap);
+    if (snap) ingestAny(snap);
   } catch (e) {
     toast(e.message, true);
   } finally {
@@ -546,6 +627,34 @@ on('#accent-picks', 'click', e => {
   $$('.acc-pick').forEach(x => x.classList.toggle('on', x === b));
 });
 
+/* ── ленты в настройках: имя + mac каждой, сохраняются на change ──── */
+function collectStrips() {
+  return $$('#strip-settings .strip-row').map((row, i) => ({
+    name: $('.strip-name', row).value.trim() || `лента ${i + 1}`,
+    mac: $('.strip-mac', row).value.trim(),
+  }));
+}
+
+function saveStrips() {
+  api('/api/settings', { method: 'POST', body: { strips: collectStrips() } })
+    .then(() => toast('сохранено, перезапусти сервис'))
+    .catch(e => toast(e.message, true));
+}
+
+function renderStripSettings() {
+  const box = $('#strip-settings');
+  if (!box) return;
+  const strips = S.meta?.strips || [];
+  box.innerHTML = strips.map((s, i) => `
+    <div class="strip-row" data-i="${s.index}">
+      <input class="strip-name" value="${esc(s.name)}" placeholder="имя" aria-label="имя ленты ${i + 1}">
+      <input class="strip-mac mono" value="${esc(s.mac)}" placeholder="AA:BB:CC:DD:EE:FF" aria-label="адрес ленты ${i + 1}">
+    </div>`).join('');
+  on('#strip-settings', 'change', e => {
+    if (e.target.closest('.strip-row')) saveStrips();
+  });
+}
+
 on('#btn-scan', 'click', async () => {
   const box = $('#scan-list');
   box.innerHTML = '<p class="muted tiny">ищу…</p>';
@@ -553,19 +662,23 @@ on('#btn-scan', 'click', async () => {
     const { devices } = await api('/api/scan');
     box.innerHTML = '';
     if (!devices.length) { box.innerHTML = '<p class="muted tiny">ничего не нашлось</p>'; return; }
+    const strips = S.meta?.strips || [];
     devices.forEach(d => {
       const el = document.createElement('div');
       el.className = 'scan-item';
       el.innerHTML = `<span class="mono">${esc(d.address)}</span><span class="muted">${esc(d.name || '')}</span>`;
-      const b = document.createElement('button');
-      b.className = 'btn';
-      b.textContent = 'выбрать';
-      b.addEventListener('click', () => {
-        $('#s-mac').textContent = d.address;
-        api('/api/settings', { method: 'POST', body: { mac: d.address } })
-          .then(() => toast('сохранено, перезапусти сервис')).catch(e => toast(e.message, true));
+      strips.forEach(s => {
+        const b = document.createElement('button');
+        b.className = 'btn';
+        b.textContent = `→ ${s.index + 1}`;
+        b.title = `адрес в ленту ${s.index + 1}`;
+        b.addEventListener('click', () => {
+          const row = $(`#strip-settings .strip-row[data-i="${s.index}"]`);
+          if (row) $('.strip-mac', row).value = d.address;
+          saveStrips();
+        });
+        el.appendChild(b);
       });
-      el.appendChild(b);
       box.appendChild(el);
     });
   } catch (e) { box.innerHTML = `<p class="muted tiny">${e.message}</p>`; }
@@ -580,7 +693,8 @@ $$('[data-test]').forEach(b => b.addEventListener('click', async () => {
   const body = t === 'on' ? { action: 'power', on: true }
     : t === 'off' ? { action: 'power', on: false }
     : { action: 'schedule', on: true, hour: 0, minute: 0, days: 0x7f };
-  try { ingest(await api('/api/apply', { method: 'POST', body })); toast('отправлено'); }
+  body.strip = S.strip;
+  try { ingestAny(await api('/api/apply', { method: 'POST', body })); toast('отправлено'); }
   catch (e) { toast(e.message, true); }
 }));
 
@@ -635,7 +749,7 @@ function connectStream() {
   if (sse) { sse.close(); sse = null; }
   const es = new EventSource('/api/stream');
   sse = es;
-  es.addEventListener('state', ev => { try { ingest(JSON.parse(ev.data)); } catch {} });
+  es.addEventListener('state', ev => { try { ingestAny(JSON.parse(ev.data)); } catch {} });
   es.addEventListener('fx', () => refreshMeta());
   es.addEventListener('timer', ev => {
     try {
@@ -677,7 +791,7 @@ setInterval(async () => {
   try {
     const snap = await api('/api/state');
     lastSnapAt = Date.now();
-    ingest(snap);
+    ingestAny(snap);
   } catch {
     lastSnapAt = Date.now();   // демон целиком мёртв, sse сам переподключится
   }
@@ -697,6 +811,8 @@ setInterval(async () => {
     renderEffects();
     renderFx();
     renderDays();
+    renderStripSettings();
+    renderStripSwitch();
   } catch (e) { toast('сервер не отвечает: ' + e.message, true); }
 
   renderPalette();
@@ -709,7 +825,7 @@ setInterval(async () => {
       tick();
     }
   }).catch(() => {});
-  try { ingest(await api('/api/state')); } catch {}
+  try { ingestAny(await api('/api/state')); } catch {}
   connectStream();
   refreshIcons();
   setTimeout(refreshIcons, 300);

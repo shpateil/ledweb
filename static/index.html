@@ -35,6 +35,8 @@
     <b>ledweb</b>
     <span class="muted" id="devname">лента</span>
   </div>
+  <!-- переключатель лент: рисуется из meta.strips, выбор живёт в localStorage -->
+  <div class="tabs strip-switch" id="strip-switch" role="tablist" aria-label="лента"></div>
   <div class="top-right">
     <span class="chip" id="latency" title="задержка последней команды"></span>
     <button class="icon-btn" id="btn-settings" title="настройки"><i data-lucide="settings-2"></i></button>
@@ -172,9 +174,11 @@
       <div class="acc-row" id="accent-picks"></div>
     </div>
     <div class="ctl">
-      <label>устройство <b class="mono" id="s-mac"></b></label>
+      <label>ленты</label>
+      <div id="strip-settings"></div>
       <button class="btn" id="btn-scan"><i data-lucide="radar"></i>найти ленты</button>
       <div class="scan-list" id="scan-list"></div>
+      <p class="muted tiny">после смены имени или адреса перезапусти сервис: systemctl --user restart ledweb</p>
     </div>
     <div class="ctl">
       <label>вариант протокола</label>

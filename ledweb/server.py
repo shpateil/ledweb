@@ -129,8 +129,11 @@ def jsonr(data: Any, status: int = 200) -> Response:
 
 
 class Server:
-    def __init__(self, driver: Driver, store: Store, host: str = "127.0.0.1", port: int = 8099):
-        self.driver = driver
+    def __init__(self, drivers: list[Driver], store: Store, host: str = "127.0.0.1", port: int = 8099):
+        self.drivers = drivers
+        # первая лента как legacy-псевдоним: скан, чтение расписания и старые
+        # вызовы (srv.driver) продолжают работать без обхода списка
+        self.driver = drivers[0]
         self.store = store
         self.host = host
         self.port = port
@@ -140,19 +143,55 @@ class Server:
         self.started_at = time.time()
         # софтверный движок эффектов: шлёт цвет через обычную очередь драйвера
         self.fx = Engine(self._fx_send)
+        # какие ленты сейчас обслуживает движок эффектов (индексы в self.drivers)
+        self._fx_targets: list[int] = []
         # таймер выключения: unix-время, когда лента должна погаснуть
         self._off_at: float | None = None
         self._off_task: asyncio.Task | None = None
         # флаг остановки: keep-alive цикл держит соединения, их надо оборвать
         self._stopped = False
-        driver.on_change = self._on_state
+        for i, d in enumerate(self.drivers):
+            d.on_change = (lambda idx: lambda st: self._on_state(idx))(i)
         self._register()
 
-    async def _fx_send(self, color: tuple[int, int, int]) -> None:
-        await self.driver.set_color(*color)
+    # ── выбор лент ──────────────────────────────────────────────────
+    def strip_names(self) -> list[str]:
+        names = [s.get("name") for s in self.store.strips()]
+        # список лент в настройках мог укоротиться/удлиниться, драйверы
+        # создаются на старте: выравниваем по числу драйверов
+        return [(names[i] if i < len(names) and names[i] else f"лента {i + 1}")
+                for i in range(len(self.drivers))]
 
-    def _on_state(self, state) -> None:
-        self.sse.broadcast("state", self.driver.snapshot())
+    def _targets(self, strip: Any) -> list[int]:
+        """strip из запроса → индексы драйверов. нет поля — обе."""
+        if strip in (None, "", "both", "all"):
+            return list(range(len(self.drivers)))
+        try:
+            i = int(strip)
+        except (TypeError, ValueError):
+            raise ValueError(f"нет такой ленты: {strip}") from None
+        if not 0 <= i < len(self.drivers):
+            raise ValueError(f"нет такой ленты: {strip}")
+        return [i]
+
+    def _snap(self, i: int) -> dict[str, Any]:
+        s = self.drivers[i].snapshot()
+        s["strip"] = i
+        s["label"] = self.strip_names()[i]
+        return s
+
+    async def _fx_send(self, color: tuple[int, int, int]) -> None:
+        # лента в fx-наборе могла отвалиться: set_color кидает BleakError
+        # после таймаута. глотаем: движок не должен умирать из-за одной
+        # ленты, при её возврате кадры снова пойдут
+        for i in self._fx_targets:
+            try:
+                await self.drivers[i].set_color(*color)
+            except Exception as e:                # noqa: BLE001
+                log.debug("fx → лента %d не прошла: %s", i, e)
+
+    def _on_state(self, idx: int) -> None:
+        self.sse.broadcast("state", self._snap(idx))
 
     # ── маршруты ────────────────────────────────────────────────────
     def route(self, method: str, path: str):
@@ -192,9 +231,13 @@ class Server:
                     self._off_at = None
                     self._off_task = None
                     self.fx.stop()
-                    await self.driver.set_power(False)
+                    for d in self.drivers:
+                        try:
+                            await d.set_power(False)
+                        except Exception as e:        # noqa: BLE001
+                            log.warning("таймер: не погасил ленту: %s", e)
                     self.sse.broadcast("timer", self.timer_state())
-                    log.info("таймер сработал, лента выключена")
+                    log.info("таймер сработал, ленты выключены")
                     return
                 self.sse.broadcast("timer", self.timer_state())
         except asyncio.CancelledError:
@@ -204,8 +247,13 @@ class Server:
         r = self.route
 
         @r("GET", "/api/state")
-        async def _state(_q, _rq):
-            return jsonr(self.driver.snapshot())
+        async def _state(q, _rq):
+            # без strip — список снимков всех лент (новый формат);
+            # ?strip=0|1|both — снимок выбранной (одиночный, старый формат)
+            strip = (q.get("strip") or [None])[0]
+            if strip in (None, ""):
+                return jsonr([self._snap(i) for i in range(len(self.drivers))])
+            return jsonr(self._snap(self._targets(strip)[0]))
 
         @r("GET", "/api/meta")
         async def _meta(_q, _rq):
@@ -216,6 +264,13 @@ class Server:
                 "effects": [
                     {"value": int(e), "name": P.EFFECT_NAMES_RU.get(int(e), f"режим {int(e):#x}")}
                     for e in P.Effect if not P.is_mic_effect(e)
+                ],
+                "strips": [
+                    {"index": i, "name": self.strip_names()[i],
+                     "mac": self.drivers[i].dev.mac,
+                     "connected": self.drivers[i].connected,
+                     "last_error": self.drivers[i].last_error}
+                    for i in range(len(self.drivers))
                 ],
                 "palettes": {
                     "material": [{"name": n, "hex": f"#{r:02x}{g:02x}{b:02x}",
@@ -242,18 +297,35 @@ class Server:
         async def _apply(_q, rq):
             data = rq.json()
             action = data.get("action", "")
+            # strip: 0/1 — конкретная лента, both/all/нет — обе
+            strip = data.pop("strip", "both")
+            try:
+                idxs = self._targets(strip)
+            except ValueError as e:
+                return jsonr({"error": str(e)}, 400)
             # прямая команда цвета/яркости/питания гасит софтверный эффект:
             # иначе цикл продолжит перекрашивать ленту поверх выбора юзера
             if action in ("color", "brightness", "power"):
                 if not (action == "color" and data.get("fx")):
                     self.fx.stop()
-            # одна попытка: реконнектом занимается фоновой поток драйвера,
-            # из хендлера его трогать нельзя — будет гонка
-            try:
-                return jsonr(await self.driver.apply(action, **data))
-            except Exception as e:                # noqa: BLE001
-                log.warning("apply %s: %s", action, e)
-                return jsonr({"error": str(e), "type": type(e).__name__}, 502)
+                    self._fx_targets = []
+            # одна попытка: реконнектом занимается фоновый поток драйвера,
+            # из хендлера его трогать нельзя — будет гонка. ленты независимы:
+            # упавшая первая не мешает второй, ошибки собираем по одной
+            out = []
+            errors = []
+            for i in idxs:
+                try:
+                    out.append(self._snap(i) | (await self.drivers[i].apply(action, **data)))
+                except Exception as e:            # noqa: BLE001
+                    log.warning("apply %s → лента %d: %s", action, i, e)
+                    errors.append(f"лента {i + 1}: {e}")
+                    out.append({**self._snap(i), "error": str(e)})
+            if errors and not out:
+                return jsonr({"error": errors[0], "type": "BleakError"}, 502)
+            res = out[0] if len(out) == 1 else out
+            resp = res if not errors else {"result": res, "error": "; ".join(errors)}
+            return jsonr(resp)
 
         @r("POST", "/api/fx")
         async def _fx(_q, rq):
@@ -265,18 +337,29 @@ class Server:
             if key == "static":
                 self.fx.stop()
                 return jsonr({"fx": self.fx.state()})
-            st = self.driver.state
+            idxs = self._targets(d.get("strip", "both"))
+            # ленты, которые были в fx, а теперь выбыли: возвращаем им их
+            # последний цвет, иначе движок продолжит перекрашивать их в фоне
+            old = [i for i in self._fx_targets if i not in idxs]
+            if old:
+                for i in old:
+                    try:
+                        await self.drivers[i].set_color(*tuple(self.drivers[i].state.color))
+                    except Exception as e:            # noqa: BLE001
+                        log.debug("fx: не вернул цвет ленте %d: %s", i, e)
             # state.color — кортеж (r,g,b), а не отдельные поля
-            base = tuple(st.color)
+            base = tuple(self.drivers[idxs[0]].state.color)
             ok = self.fx.start(key, base, float(d.get("speed", 1.0)))
             if not ok:
                 return jsonr({"error": "эффект не запустился"}, 500)
+            self._fx_targets = idxs
             self.sse.broadcast("fx", self.fx.state())
-            return jsonr({"fx": self.fx.state()})
+            return jsonr({"fx": self.fx.state(), "strips": idxs})
 
         @r("POST", "/api/fx/stop")
         async def _fx_stop(_q, _rq):
             self.fx.stop()
+            self._fx_targets = []
             self.sse.broadcast("fx", self.fx.state())
             return jsonr({"fx": self.fx.state()})
 
@@ -362,12 +445,16 @@ class Server:
 
         @r("POST", "/api/reconnect")
         async def _reconnect(_q, rq):
-            # переподключением владеет фоновой поток драйвера. форсируем его
+            # переподключением владеет фоновый поток драйвера. форсируем его
             # перезапуск, а не дёргаем соединение из хендлера
-            self.driver.dev.auto_connect = False
+            data = rq.json()
+            idxs = self._targets(data.get("strip", "both"))
+            for i in idxs:
+                self.drivers[i].dev.auto_connect = False
             await asyncio.sleep(0.3)
-            self.driver.dev.auto_connect = True
-            return jsonr(self.driver.snapshot())
+            for i in idxs:
+                self.drivers[i].dev.auto_connect = True
+            return jsonr([self._snap(i) for i in idxs])
 
         @r("GET", "/api/settings")
         async def _settings(_q, _rq):
@@ -381,13 +468,22 @@ class Server:
             # следующем старте, и панель не поднималась вовсе
             if "variant" in d and d["variant"] not in P.VARIANTS:
                 return jsonr({"error": f"нет такого варианта: {d['variant']}"}, 400)
+            if "strips" in d:
+                if not isinstance(d["strips"], list) or \
+                        not all(isinstance(s, dict) for s in d["strips"]):
+                    return jsonr({"error": "strips должен быть списком объектов"}, 400)
+                # нормализуем: имя + mac, мусор отбрасываем
+                d["strips"] = [{"name": str(s.get("name") or f"лента {i + 1}"),
+                                "mac": str(s.get("mac") or "").strip().upper()}
+                               for i, s in enumerate(d["strips"])]
             self.store.settings.update(d)
             self._save_settings()
             return jsonr(self.store.settings)
 
         @r("GET", "/api/health")
         async def _health(_q, _rq):
-            return jsonr({"ok": True, "connected": self.driver.connected,
+            return jsonr({"ok": True,
+                          "connected": [d.connected for d in self.drivers],
                           "uptime": round(time.time() - self.started_at, 1)})
 
     def _save_settings(self) -> None:
@@ -560,8 +656,9 @@ class Server:
         await writer.drain()
         q = self.sse.subscribe()
         try:
-            snap = self.driver.snapshot()
-            writer.write(f"event: state\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n".encode())
+            for i in range(len(self.drivers)):
+                snap = self._snap(i)
+                writer.write(f"event: state\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n".encode())
             await writer.drain()
             while True:
                 try:
@@ -604,8 +701,13 @@ class Server:
 
 def build(host: str = "127.0.0.1", port: int = 8099) -> Server:
     store = Store()
-    dev = Device(mac=store.settings.get("mac", P.DEFAULT_MAC),
-                 variant=store.settings.get("variant", P.DEFAULT_VARIANT),
-                 auto_connect=store.settings.get("auto_connect", True))
-    driver = Driver(dev)
-    return Server(driver, store, host, port)
+    drivers: list[Driver] = []
+    for st in store.strips():
+        dev = Device(mac=st.get("mac") or "",
+                     name=st.get("name") or "лента",
+                     variant=store.settings.get("variant", P.DEFAULT_VARIANT),
+                     auto_connect=bool(store.settings.get("auto_connect", True)) and bool(st.get("mac")))
+        drivers.append(Driver(dev))
+    if not drivers:
+        drivers = [Driver(Device())]
+    return Server(drivers, store, host, port)

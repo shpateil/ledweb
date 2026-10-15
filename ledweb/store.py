@@ -97,6 +97,28 @@ class Store:
         })
         self._fired: dict[str, float] = {}
 
+    # ── ленты ───────────────────────────────────────────────────────
+    def strips(self) -> list[dict[str, Any]]:
+        """список лент из настроек. поддержка двух форматов:
+
+        * новый: settings["strips"] = [{"name": ..., "mac": ...}, ...]
+        * старый: один mac в settings["mac"] — заворачиваем в одну ленту,
+          чтобы панель с одной лентой продолжала работать без миграции
+        """
+        s = self.settings.get("strips")
+        if isinstance(s, list) and s:
+            out = []
+            for i, st in enumerate(s):
+                if not isinstance(st, dict):
+                    continue
+                out.append({
+                    "name": str(st.get("name") or f"лента {i + 1}"),
+                    "mac": str(st.get("mac") or "").strip().upper(),
+                })
+            return out or [{"name": "лента 1", "mac": ""}]
+        mac = str(self.settings.get("mac") or "").strip()
+        return [{"name": "лента 1", "mac": mac.upper()}]
+
     # ── пресеты ─────────────────────────────────────────────────────
     def list_presets(self) -> list[dict[str, Any]]:
         return [p.to_dict() for p in self.presets]

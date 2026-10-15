@@ -191,6 +191,17 @@ input[type="range"]::-moz-range-thumb {
 .tab:hover { color: var(--tx); background: var(--hover); }
 .tab.on { color: var(--tx); background: var(--surface-2); border-color: var(--line); }
 
+/* переключатель лент в шапке: те же сегменты + точка связи у каждой.
+   .top уже space-between — элемент встаёт по центру сам */
+.strip-switch { min-width: 0; overflow: hidden; }
+.strip-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  display: inline-block; margin-right: 6px; vertical-align: 1px;
+}
+.strip-row { display: flex; gap: var(--sp-2); }
+.strip-row input { min-width: 0; flex: 1; }
+.strip-row .strip-name { flex: 0 0 38%; }
+
 /* палитра: сетка шире, чтобы русские названия не резались на «пурпурн…» */
 .palette { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: var(--sp-4); }
 .pal {
@@ -361,6 +372,9 @@ kbd {
   .swatch-meta { left: var(--sp-5); bottom: var(--sp-5); }
   .hex { font-size: var(--fs-16); }
   .sheet { width: 100vw; }
+  /* шапка на телефоне: бренд жмётся, название ленты прячем — переключатель важнее */
+  .brand .muted { display: none; }
+  .strip-switch .tab { padding: 5px var(--sp-3); }
 }
 @media (hover: none) {
   input[type="range"] { height: 44px; }
